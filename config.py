@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
@@ -55,7 +57,7 @@ USER_AGENT = os.getenv("USER_AGENT", "VLC/3.0.20 LibVLC/3.0.20")
 
 
 # ==========================================================
-# TMDB (opcional)
+# TMDB
 # ==========================================================
 TMDB_API_KEY  = os.getenv("TMDB_API_KEY", "").strip()
 TMDB_LANGUAGE = os.getenv("TMDB_LANGUAGE", "pt-BR")
@@ -65,7 +67,15 @@ TMDB_MAX_PER_CYCLE = int(os.getenv("TMDB_MAX_PER_CYCLE", "30"))
 
 
 # ==========================================================
-# Enricher (background)
+# Fanart.tv (logos alternativos)
+# ==========================================================
+FANART_API_KEY  = os.getenv("FANART_API_KEY", "").strip()
+FANART_ENABLED  = bool(FANART_API_KEY)
+FANART_LANGUAGE = os.getenv("FANART_LANGUAGE", "pt").lower()[:2]
+
+
+# ==========================================================
+# Enricher
 # ==========================================================
 ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE", "20"))
 ENRICH_INTERVAL      = int(os.getenv("ENRICH_INTERVAL", "60"))
@@ -81,7 +91,7 @@ TRAILER_CHECK_STARTUP_DELAY = int(os.getenv("TRAILER_CHECK_STARTUP_DELAY", "120"
 
 
 # ==========================================================
-# Proxy reverso de streaming
+# Proxy reverso
 # ==========================================================
 PROXY_ENABLED          = os.getenv("PROXY_ENABLED", "true").lower() == "true"
 PROXY_MAX_CONCURRENT   = int(os.getenv("PROXY_MAX_CONCURRENT", "100"))
@@ -90,7 +100,6 @@ PROXY_CHUNK_SIZE       = int(os.getenv("PROXY_CHUNK_SIZE", "65536"))
 PROXY_CONNECT_TIMEOUT  = int(os.getenv("PROXY_CONNECT_TIMEOUT", "10"))
 PROXY_READ_TIMEOUT     = int(os.getenv("PROXY_READ_TIMEOUT", "300"))
 
-# Base pública pra montar URLs completas (opcional)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 
@@ -126,6 +135,9 @@ TMDB_CACHE_DIR.mkdir(exist_ok=True)
 
 INFO_CACHE_DIR = CACHE_DIR / "info"
 INFO_CACHE_DIR.mkdir(exist_ok=True)
+
+LOGOS_CACHE_DIR = CACHE_DIR / "logos"
+LOGOS_CACHE_DIR.mkdir(exist_ok=True)
 
 
 # ==========================================================

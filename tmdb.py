@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import time
 from datetime import datetime, timedelta
@@ -198,7 +200,7 @@ async def buscar_filme(titulo: str, ano=None):
                 params={
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
-                    "append_to_response": "images,videos,release_dates",
+                    "append_to_response": "images,videos,release_dates,external_ids",
                     "include_image_language": f"{TMDB_LANGUAGE[:2]},en,null",
                 },
                 headers={"User-Agent": USER_AGENT},
@@ -211,6 +213,7 @@ async def buscar_filme(titulo: str, ano=None):
     images = full.get("images") or {}
     videos = (full.get("videos") or {}).get("results") or []
     release = full.get("release_date", "")
+    external = full.get("external_ids") or {}
 
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
@@ -219,6 +222,7 @@ async def buscar_filme(titulo: str, ano=None):
 
     resultado = {
         "tmdb_id": tmdb_id,
+        "imdb_id": external.get("imdb_id"),
         "titulo_tmdb": full.get("title") or melhor.get("title"),
         "titulo_original": full.get("original_title"),
         "tagline": full.get("tagline") or None,
@@ -281,7 +285,7 @@ async def buscar_serie(titulo: str, ano=None):
                 params={
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
-                    "append_to_response": "images,videos,content_ratings",
+                    "append_to_response": "images,videos,content_ratings,external_ids",
                     "include_image_language": f"{TMDB_LANGUAGE[:2]},en,null",
                 },
                 headers={"User-Agent": USER_AGENT},
@@ -294,6 +298,7 @@ async def buscar_serie(titulo: str, ano=None):
     images = full.get("images") or {}
     videos = (full.get("videos") or {}).get("results") or []
     release = full.get("first_air_date", "")
+    external = full.get("external_ids") or {}
 
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
@@ -302,6 +307,8 @@ async def buscar_serie(titulo: str, ano=None):
 
     resultado = {
         "tmdb_id": tmdb_id,
+        "tvdb_id": external.get("tvdb_id"),
+        "imdb_id": external.get("imdb_id"),
         "titulo_tmdb": full.get("name") or melhor.get("name"),
         "titulo_original": full.get("original_name"),
         "tagline": full.get("tagline") or None,

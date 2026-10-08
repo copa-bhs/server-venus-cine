@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 
 import tmdb
+import logos
 from config import (
     TMDB_ENABLED, ENRICH_BATCH_SIZE, ENRICH_INTERVAL, ENRICH_STARTUP_DELAY,
 )
@@ -26,11 +29,7 @@ async def _enriquecer_item(item: dict, tipo: str):
         item["score"] = dados.get("score")
         item["generos"] = dados.get("generos") or []
 
-        # ─────────────────────────────────────────────────
-        # CORREÇÃO: para SÉRIES, SEMPRE sobrescreve a capa
-        # porque o M3U traz a capa do EPISÓDIO, não da série.
-        # Para filmes, só substitui se não tiver.
-        # ─────────────────────────────────────────────────
+        # Capa — séries SEMPRE sobrescrevem (M3U traz capa do episódio)
         if tipo == "serie":
             if dados.get("capa"):
                 item["capa"] = dados["capa"]
@@ -38,11 +37,33 @@ async def _enriquecer_item(item: dict, tipo: str):
             if dados.get("capa") and not item.get("capa"):
                 item["capa"] = dados["capa"]
 
-        # Logo transparente (premium) — sobrescreve sempre
-        if dados.get("logo"):
-            item["logo"] = dados["logo"]
+        # ==========================================================
+        # LOGO — agregação multi-fonte: TMDB → Fanart.tv
+        # ==========================================================
+        logo_tmdb = dados.get("logo")
+        logo_final = None
 
-        # Banner 4K (hero slider) — sobrescreve sempre
+        if tipo == "filme":
+            logo_final = await logos.buscar_logo_filme(
+                titulo=item.get("titulo") or "",
+                ano=item.get("ano"),
+                tmdb_id=dados.get("tmdb_id"),
+                logo_tmdb=logo_tmdb,
+            )
+        else:
+            logo_final = await logos.buscar_logo_serie(
+                titulo=item.get("titulo") or "",
+                ano=item.get("ano"),
+                tmdb_id=dados.get("tmdb_id"),
+                tvdb_id=dados.get("tvdb_id"),
+                logo_tmdb=logo_tmdb,
+            )
+
+        if logo_final:
+            item["logo"] = logo_final
+            item["logo_fonte"] = "tmdb" if logo_tmdb else "fanart"
+
+        # Banner 4K
         if dados.get("banner_4k"):
             item["banner_4k"] = dados["banner_4k"]
         if dados.get("banner"):
@@ -52,7 +73,7 @@ async def _enriquecer_item(item: dict, tipo: str):
         if dados.get("capa_grande"):
             item["capa_grande"] = dados["capa_grande"]
 
-        # Trailer (pra rota /trailers/verificar)
+        # Trailer
         if dados.get("trailer_url"):
             item["trailer_url"] = dados["trailer_url"]
             item["trailer_nome"] = dados.get("trailer_nome")
