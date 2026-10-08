@@ -26,11 +26,37 @@ async def _enriquecer_item(item: dict, tipo: str):
         item["score"] = dados.get("score")
         item["generos"] = dados.get("generos") or []
 
-        if dados.get("capa") and not item.get("capa"):
-            item["capa"] = dados["capa"]
+        # ─────────────────────────────────────────────────
+        # CORREÇÃO: para SÉRIES, SEMPRE sobrescreve a capa
+        # porque o M3U traz a capa do EPISÓDIO, não da série.
+        # Para filmes, só substitui se não tiver.
+        # ─────────────────────────────────────────────────
+        if tipo == "serie":
+            if dados.get("capa"):
+                item["capa"] = dados["capa"]
+        else:
+            if dados.get("capa") and not item.get("capa"):
+                item["capa"] = dados["capa"]
 
+        # Logo transparente (premium) — sobrescreve sempre
         if dados.get("logo"):
             item["logo"] = dados["logo"]
+
+        # Banner 4K (hero slider) — sobrescreve sempre
+        if dados.get("banner_4k"):
+            item["banner_4k"] = dados["banner_4k"]
+        if dados.get("banner"):
+            item["banner"] = dados["banner"]
+
+        # Capa grande
+        if dados.get("capa_grande"):
+            item["capa_grande"] = dados["capa_grande"]
+
+        # Trailer (pra rota /trailers/verificar)
+        if dados.get("trailer_url"):
+            item["trailer_url"] = dados["trailer_url"]
+            item["trailer_nome"] = dados.get("trailer_nome")
+            item["trailer"] = dados.get("trailer")
 
         item["tmdb_enriquecido"] = True
 
