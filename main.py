@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import time
@@ -6,6 +8,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from config import (
     IPTV_URL, USER_AGENT, CACHE_TTL,
@@ -25,7 +28,18 @@ from proxy import (
 )
 import tmdb
 
-app = FastAPI(title="IPTV Organizer Pro", version="2.6.0")
+app = FastAPI(title="IPTV Organizer Pro", version="2.8.0")
+
+# ==========================================================
+# CORS — permite usar o painel HTML de qualquer origem
+# ==========================================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _INDEX: dict = {}
 _AUTO_REFRESH_TASK = None
@@ -345,11 +359,15 @@ def paginate(items: list, page: int, size: int) -> dict:
 
 
 def _add_slug_urls(item: dict, tipo: str | None = None):
-    """Adiciona slug e URL de stream amigável sem expor credencial."""
+    """Adiciona slug e URL de stream com extensão .mp4."""
     slug = slug_for(item, tipo)
     if slug:
+        base = (PUBLIC_BASE_URL or "").rstrip("/")
         item["slug"] = slug
-        item["url_stream"] = f"{PUBLIC_BASE_URL}/stream/{slug}" if PUBLIC_BASE_URL else f"/stream/{slug}"
+        if base:
+            item["url_stream"] = f"{base}/stream/{slug}.mp4"
+        else:
+            item["url_stream"] = f"/stream/{slug}.mp4"
 
 
 # ==========================================================
@@ -388,13 +406,14 @@ async def shutdown():
 def root():
     return {
         "service": "IPTV Organizer Pro",
-        "version": "2.6.0",
+        "version": "2.8.0",
         "tmdb": TMDB_ENABLED,
         "proxy": True,
+        "cors": "habilitado (allow_origins=*)",
         "endpoints": {
             "GET  /home": "Dashboard 12 coleções + hero + trailers",
-            "GET  /stream/{slug}": "Proxy de stream (URL amigável)",
-            "GET  /stream/id/{id}": "Proxy de stream (via ID do painel)",
+            "GET  /stream/{slug}.mp4": "Proxy de stream (URL amigável)",
+            "GET  /stream/id/{id}": "Proxy via ID do painel",
             "GET  /proxy/stats": "Monitor do proxy em tempo real",
             "POST /refresh": "Força atualização do M3U",
             "GET  /status": "Estado + stats",
@@ -453,6 +472,7 @@ async def status():
         "valid": idade < CACHE_TTL,
         "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
         "tmdb_ativo": TMDB_ENABLED,
+        "public_base_url": PUBLIC_BASE_URL,
         "enrichment": {
             "filmes_total": len(filmes),
             "filmes_enriquecidos": enriq_f,
@@ -654,16 +674,16 @@ async def info_serie(serie_id: str, force: bool = False):
     try:
         data = await fetch_series_info(serie_id, force=force)
         _add_slug_urls(data, "serie")
-        # Adiciona slug em cada episódio
         for ep in data.get("episodios", []):
             t = ep.get("temporada")
             e = ep.get("episodio")
             if t and e:
-                base = slug_for({"titulo": data.get("titulo"), "tipo": "serie"}, "serie")
-                if base:
-                    slug_ep = f"{base}-t{int(t):02d}-e{int(e):02d}"
+                base_slug = slug_for({"titulo": data.get("titulo"), "tipo": "serie"}, "serie")
+                if base_slug:
+                    slug_ep = f"{base_slug}-t{int(t):02d}-e{int(e):02d}"
                     ep["slug"] = slug_ep
-                    ep["url_stream"] = f"{PUBLIC_BASE_URL}/stream/{slug_ep}" if PUBLIC_BASE_URL else f"/stream/{slug_ep}"
+                    base_url = (PUBLIC_BASE_URL or "").rstrip("/")
+                    ep["url_stream_proxy"] = f"{base_url}/stream/{slug_ep}.mp4" if base_url else f"/stream/{slug_ep}.mp4"
         return data
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -676,12 +696,20 @@ async def info_serie(serie_id: str, force: bool = False):
 # ==========================================================
 # PROXY DE STREAM
 # ==========================================================
-@app.get("/stream/{slug}")
-async def proxy_por_slug(slug: str, request: Request):
+@app.get("/stream/{slug_path:path}")
+async def proxy_por_slug(slug_path: str, request: Request):
     """
     Proxy de stream via slug amigável.
-    Ex: /stream/homem-aranha-de-volta-para-casa-2017
+    Aceita com ou sem extensão:
+      /stream/homem-aranha-de-volta-para-casa-2017
+      /stream/homem-aranha-de-volta-para-casa-2017.mp4
     """
+    slug = slug_path
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
+        if slug.lower().endswith(ext):
+            slug = slug[:-len(ext)]
+            break
+
     item = get_by_slug(slug)
     if not item:
         raise HTTPException(404, "Slug não encontrado.")
@@ -690,8 +718,14 @@ async def proxy_por_slug(slug: str, request: Request):
 
 @app.get("/stream/id/{item_id}")
 async def proxy_por_id(item_id: str, request: Request):
-    """Proxy via ID do painel Xtream: /stream/id/2127"""
-    item = get_by_id(item_id)
+    """Proxy via ID do painel Xtream: /stream/id/2127 ou /stream/id/2127.mp4"""
+    clean_id = item_id
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov"):
+        if clean_id.lower().endswith(ext):
+            clean_id = clean_id[:-len(ext)]
+            break
+
+    item = get_by_id(clean_id)
     if not item:
         raise HTTPException(404, "ID não encontrado.")
     return await stream_proxy(item["url"], request)
