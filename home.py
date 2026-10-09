@@ -1,17 +1,12 @@
-"""
-Dashboard /home — monta todas as coleções da tela inicial.
-Rotação semanal automática via seed da semana ISO. Sem IA.
-"""
+from __future__ import annotations
+
 import time
 import random
 from datetime import datetime, timedelta
 
-from config import TMDB_ENABLED
+from config import TMDB_ENABLED, PUBLIC_BASE_URL
 
 
-# ==========================================================
-# ROTAÇÃO SEMANAL
-# ==========================================================
 def _semana_atual() -> int:
     iso = datetime.now().isocalendar()
     return iso.year * 100 + iso.week
@@ -25,9 +20,6 @@ def _shuffle_semanal(items: list, salt: str = "") -> list:
     return copia
 
 
-# ==========================================================
-# HELPERS
-# ==========================================================
 def _tem_capa(item: dict) -> bool:
     return bool(item.get("capa"))
 
@@ -38,6 +30,10 @@ def _tem_banner(item: dict) -> bool:
 
 def _tem_logo(item: dict) -> bool:
     return bool(item.get("logo"))
+
+
+def _tem_sinopse(item: dict) -> bool:
+    return bool((item.get("sinopse") or "").strip())
 
 
 def _score(item: dict) -> float:
@@ -62,56 +58,46 @@ def _tem_genero(item: dict, generos_alvo: list) -> bool:
     return False
 
 
-# ==========================================================
-# FILTROS DE CONTEÚDO — exclui documentário, música, shows, etc.
-# ==========================================================
 _GENEROS_EXCLUIDOS = {
     "documentário", "documentario", "documentary",
     "música", "musica", "music", "musical",
     "talk show", "reality", "news", "notícias",
-    "tv movie", "novela",
 }
 
 _TITULOS_EXCLUIDOS = [
     "rock in rio", "ao vivo", "live at", "concert", "concerto",
     "documentário", "trailer", "making of", "bastidores",
-    "coletânea", "coletanea", "temporada completa", "trilha sonora",
+    "coletânea", "coletanea", "trilha sonora",
 ]
 
 
 def _elegivel_top10(item: dict) -> bool:
-    """Exclui documentários, shows, música, etc. do Top 10."""
-    # Pelo gênero (após enriquecimento TMDB)
     for g in (item.get("generos") or []):
         if g.strip().lower() in _GENEROS_EXCLUIDOS:
             return False
-
-    # Pelo título
     titulo = (item.get("titulo") or "").lower()
     for termo in _TITULOS_EXCLUIDOS:
         if termo in titulo:
             return False
-
-    # Pela categoria (caso não tenha sido enriquecido ainda)
     cat = (item.get("categoria") or "").lower()
     if any(t in cat for t in ("documentário", "documentario", "musical", "show")):
         return False
-
     return True
 
 
 def _elegivel_hero(item: dict) -> bool:
-    """Só filmes/séries de verdade, com capa boa."""
+    """Hero exige capa, banner, sinopse e score decente."""
     if not _tem_capa(item):
+        return False
+    if not _tem_banner(item):
+        return False
+    if not _tem_sinopse(item):
         return False
     if _score(item) < 5.0:
         return False
     return _elegivel_top10(item)
 
 
-# ==========================================================
-# DETECÇÃO DE TIPO
-# ==========================================================
 def _tipo_do_item(item: dict, tipo_fallback: str | None = None) -> str:
     t = (item.get("tipo") or "").lower()
     if t in ("filme", "movie"):
@@ -125,83 +111,94 @@ def _tipo_do_item(item: dict, tipo_fallback: str | None = None) -> str:
     return tipo_fallback or "filme"
 
 
-def _item_para_card(item: dict, tipo_fallback: str | None = None) -> dict:
-    tipo = _tipo_do_item(item, tipo_fallback)
+# ==========================================================
+# CARD SIMPLES (usado em coleções, listagens, busca)
+# ==========================================================
+def _card_simples(item: dict, tipo: str | None = None) -> dict:
     return {
         "id": item.get("id"),
-        "tipo": tipo,
+        "tipo": _tipo_do_item(item, tipo),
         "titulo": item.get("titulo"),
-        "ano": item.get("ano"),
         "capa": item.get("capa"),
-        "capa_grande": item.get("capa_grande"),
-        "logo": item.get("logo"),
-        "banner": item.get("banner"),
-        "banner_4k": item.get("banner_4k"),
-        "score": item.get("score"),
+        "ano": item.get("ano"),
         "classificacao": item.get("classificacao"),
-        "generos": item.get("generos") or [],
-        "categoria": item.get("categoria"),
-        "trailer_url": item.get("trailer_url"),
-        "trailer_nome": item.get("trailer_nome"),
-        "total_temporadas": item.get("total_temporadas"),
-        "total_episodios": item.get("total_episodios"),
     }
 
 
 # ==========================================================
-# HERO — 5 slides com fallback inteligente
+# CARD HERO (rico — banner, logo, sinopse, gêneros)
+# ==========================================================
+def _card_hero(item: dict, tipo: str | None = None) -> dict:
+    slug = item.get("slug")
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    url_stream = None
+    if slug:
+        url_stream = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
+
+    return {
+        "id": item.get("id"),
+        "tipo": _tipo_do_item(item, tipo),
+        "titulo": item.get("titulo"),
+        # imagem de FUNDO do slide (banner, não capa)
+        "banner": item.get("banner_4k") or item.get("banner") or item.get("capa"),
+        # capa (poster vertical) — fallback visual
+        "capa": item.get("capa"),
+        # logo transparente (Netflix style)
+        "logo": item.get("logo"),
+        # conteúdo extra
+        "sinopse": item.get("sinopse"),
+        "score": item.get("score"),
+        "classificacao": item.get("classificacao"),
+        "ano": item.get("ano"),
+        "generos": (item.get("generos") or [])[:3],
+        "trailer_url": item.get("trailer_url"),
+        "url_stream": url_stream,
+    }
+
+
+# ==========================================================
+# HERO
 # ==========================================================
 def _build_hero(filmes: list, series: list, n: int = 5) -> list:
     """
-    Monta o hero com prioridade:
-      1. Itens com banner_4k + logo (ideal — slide completo)
-      2. Itens com banner + capa
-      3. Itens com logo + capa
-      4. Itens só com capa e score alto
-    Prioriza lançamentos recentes (últimos 2 anos).
+    Monta o hero com prioridade por qualidade visual:
+      1. banner_4k + logo + sinopse (melhor)
+      2. banner + logo + sinopse
+      3. banner + sinopse
     """
     todos = filmes + series
-
-    # Filtra só elegíveis
     elegiveis = [i for i in todos if _elegivel_hero(i)]
 
     if not elegiveis:
         return []
 
     def prioridade(item: dict) -> tuple:
-        """Menor = melhor (ordenação crescente)."""
+        tem_banner_4k = bool(item.get("banner_4k"))
         tem_banner = _tem_banner(item)
         tem_logo = _tem_logo(item)
-        tem_banner_4k = bool(item.get("banner_4k"))
 
-        # Tiers (0 = melhor)
         if tem_banner_4k and tem_logo:
             tier = 0
         elif tem_banner and tem_logo:
             tier = 1
         elif tem_banner:
             tier = 2
-        elif tem_logo:
-            tier = 3
         else:
-            tier = 4
+            tier = 3
 
         ano = _ano(item)
-        # Prioriza ano recente (>= 2023)
         recente = 0 if ano >= 2023 else (1 if ano >= 2020 else 2)
-        # Score invertido (maior primeiro)
         return (tier, recente, -_score(item))
 
     elegiveis.sort(key=prioridade)
-    top = elegiveis[:30]
+    top = elegiveis[:40]
 
-    # Rotaciona semanalmente entre os 30 melhores
     randomizados = _shuffle_semanal(top, "hero")
-    return [_item_para_card(i) for i in randomizados[:n]]
+    return [_card_hero(i) for i in randomizados[:n]]
 
 
 # ==========================================================
-# COLETORES COM FILTROS
+# COLETORES
 # ==========================================================
 def _top_por_score(itens: list, n: int = 10, filtrar_elegiveis: bool = True) -> list:
     validos = [i for i in itens if _tem_capa(i) and _score(i) > 0]
@@ -212,14 +209,8 @@ def _top_por_score(itens: list, n: int = 10, filtrar_elegiveis: bool = True) -> 
 
 
 def _top_series_fallback(series: list, n: int = 10) -> list:
-    """Fallback quando séries ainda não têm score: usa total_episodios."""
     validos = [s for s in series if _tem_capa(s)]
-    validos.sort(
-        key=lambda s: (
-            -(s.get("total_episodios") or 0),
-            -_ano(s),
-        )
-    )
+    validos.sort(key=lambda s: (-(s.get("total_episodios") or 0), -_ano(s)))
     return validos[:n]
 
 
@@ -236,10 +227,7 @@ def _por_genero(itens: list, generos: list, n: int = 15) -> list:
 
 
 def _bem_avaliados(itens: list, min_score: float = 8.0, n: int = 15) -> list:
-    validos = [
-        i for i in itens
-        if _tem_capa(i) and _score(i) >= min_score and _elegivel_top10(i)
-    ]
+    validos = [i for i in itens if _tem_capa(i) and _score(i) >= min_score and _elegivel_top10(i)]
     validos.sort(key=_score, reverse=True)
     return validos[:n]
 
@@ -256,7 +244,7 @@ def _recentes(itens: list, n: int = 20) -> list:
 
 
 # ==========================================================
-# 12 COLEÇÕES
+# 12 COLEÇÕES (cards simples)
 # ==========================================================
 def _construir_colecoes(filmes: list, series: list) -> list:
     todos = filmes + series
@@ -265,63 +253,32 @@ def _construir_colecoes(filmes: list, series: list) -> list:
     def add(id_, titulo, itens, tipo_padrao: str | None = None):
         if not itens:
             return
-        items_fmt = [_item_para_card(it, tipo_padrao) for it in itens]
+        items_fmt = [_card_simples(it, tipo_padrao) for it in itens]
         colecoes.append({
             "id": id_,
             "titulo": titulo,
-            "layout": "poster",
             "total": len(items_fmt),
             "items": items_fmt,
         })
 
-    # 1 — Top 10 Filmes (filtrando documentários, shows, música)
-    top_filmes = _top_por_score(filmes, 10)
-    add("top10_filmes", "🏆 Top 10 Filmes", top_filmes, "filme")
-
-    # 2 — Top 10 Séries (com fallback se ainda não enriquecidas)
-    top_series = _top_por_score(series, 10)
-    if not top_series:
-        top_series = _top_series_fallback(series, 10)
+    add("top10_filmes", "🏆 Top 10 Filmes", _top_por_score(filmes, 10), "filme")
+    top_series = _top_por_score(series, 10) or _top_series_fallback(series, 10)
     add("top10_series", "🏆 Top 10 Séries", top_series, "serie")
 
-    # 3 — Em Alta (rotativo semanal, filmes e séries)
     altos_f = _top_por_score(filmes, 30)
     altos_s = _top_por_score(series, 30) or _top_series_fallback(series, 30)
     em_alta = _shuffle_semanal(altos_f + altos_s, "em_alta")[:15]
     add("em_alta", "🔥 Em Alta", em_alta)
 
-    # 4 — Lançamentos (recentes, com filtro)
     lanc = [i for i in _recentes(filmes, 30) if _elegivel_top10(i)]
     add("lancamentos", "🆕 Lançamentos", lanc[:20], "filme")
-
-    # 5 — Ação
-    add("acao", "💥 Ação",
-        _por_genero(todos, ["Ação", "Action", "Aventura", "Adventure"], 15))
-
-    # 6 — Comédia
-    add("comedia", "😂 Comédia",
-        _por_genero(todos, ["Comédia", "Comedy"], 15))
-
-    # 7 — Drama
-    add("drama", "🎭 Drama",
-        _por_genero(todos, ["Drama"], 15))
-
-    # 8 — Terror
-    add("terror", "👻 Terror",
-        _por_genero(todos, ["Terror", "Horror"], 15))
-
-    # 9 — Ficção Científica
-    add("ficcao", "🚀 Ficção Científica",
-        _por_genero(todos, ["Ficção científica", "Science Fiction", "Sci-Fi"], 15))
-
-    # 10 — Animação
-    add("animacao", "🎨 Animação",
-        _por_genero(todos, ["Animação", "Animation"], 15))
-
-    # 11 — Bem Avaliados (score >= 8)
+    add("acao", "💥 Ação", _por_genero(todos, ["Ação", "Action", "Aventura", "Adventure"], 15))
+    add("comedia", "😂 Comédia", _por_genero(todos, ["Comédia", "Comedy"], 15))
+    add("drama", "🎭 Drama", _por_genero(todos, ["Drama"], 15))
+    add("terror", "👻 Terror", _por_genero(todos, ["Terror", "Horror"], 15))
+    add("ficcao", "🚀 Ficção Científica", _por_genero(todos, ["Ficção científica", "Science Fiction", "Sci-Fi"], 15))
+    add("animacao", "🎨 Animação", _por_genero(todos, ["Animação", "Animation"], 15))
     add("bem_avaliados", "⭐ Bem Avaliados", _bem_avaliados(todos, 8.0, 15))
-
-    # 12 — Catálogo Novo (mais recentes)
     add("catalogo_novo", "📚 Catálogo Novo", _top_por_ano(todos, 15))
 
     return colecoes
@@ -334,11 +291,16 @@ def _construir_trailers(filmes: list, series: list, n: int = 10) -> list:
     todos = []
     for f in filmes:
         if f.get("trailer_url"):
-            todos.append(_item_para_card(f, "filme"))
+            card = _card_simples(f, "filme")
+            card["trailer_url"] = f.get("trailer_url")
+            card["banner"] = f.get("banner") or f.get("capa")
+            todos.append(card)
     for s in series:
         if s.get("trailer_url"):
-            todos.append(_item_para_card(s, "serie"))
-
+            card = _card_simples(s, "serie")
+            card["trailer_url"] = s.get("trailer_url")
+            card["banner"] = s.get("banner") or s.get("capa")
+            todos.append(card)
     randomizados = _shuffle_semanal(todos, "trailers")
     return randomizados[:n]
 

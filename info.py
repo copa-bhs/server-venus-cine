@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import time
 import httpx
@@ -12,6 +14,7 @@ from config import (
     TMDB_ENABLED,
 )
 import tmdb
+import logos
 
 BASE_API = f"{IPTV_HOST}/player_api.php"
 USERNAME = IPTV_USERNAME
@@ -62,16 +65,6 @@ def _to_int(v):
         return None
 
 
-def _quality_from_name(name: str):
-    if not name:
-        return None
-    n = name.upper()
-    for tag in ("4K", "UHD", "FHD", "FULLHD", "HD", "SD", "CAM"):
-        if tag in n:
-            return tag
-    return None
-
-
 def _build_stream_url(kind: str, item_id: str) -> str:
     return f"{IPTV_HOST}/{kind}/{USERNAME}/{PASSWORD}/{item_id}.mp4"
 
@@ -83,104 +76,118 @@ def _build_episode_url(series_id: str, ep: dict) -> str:
     return f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{series_id}_{season}_{episode}.{ext}"
 
 
-def _preencher_com_tmdb(payload: dict, dados_tmdb: dict) -> dict:
-    if not dados_tmdb:
-        return payload
+async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
+    if not force:
+        cached = _cache_get("movie", item_id)
+        if cached:
+            return cached
 
-    preenchidos = []
+    url = INFO_MOVIE_URL.format(id=item_id)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        r = await client.get(url, headers={"User-Agent": USER_AGENT})
+        if r.status_code != 200:
+            raise ValueError("Provedor recusou")
+        raw = r.json()
 
-    for campo_local, campo_tmdb in [
-        ("ano", "ano"),
-        ("data_lancamento", "release_date"),
-        ("sinopse", "sinopse"),
-        ("score", "score"),
-        ("titulo_original", "titulo_original"),
-        ("duracao_min", "duracao_min"),
-    ]:
-        if not payload.get(campo_local) and dados_tmdb.get(campo_tmdb):
-            payload[campo_local] = dados_tmdb[campo_tmdb]
-            preenchidos.append(campo_local)
-
-    if dados_tmdb.get("capa"):
-        payload["capa_tmdb"] = dados_tmdb["capa"]
-        payload["capa_grande"] = dados_tmdb.get("capa_grande")
-        if not payload.get("capa"):
-            payload["capa"] = dados_tmdb["capa"]
-            preenchidos.append("capa")
-
-    if dados_tmdb.get("banner"):
-        payload["banner"] = dados_tmdb["banner"]
-        payload["banner_4k"] = dados_tmdb.get("banner_4k")
-        preenchidos.append("banner")
-
-    if dados_tmdb.get("logo"):
-        payload["logo"] = dados_tmdb["logo"]
-        payload["logo_original"] = dados_tmdb.get("logo_original")
-
-    if dados_tmdb.get("trailer"):
-        payload["trailer"] = dados_tmdb["trailer"]
-        payload["trailer_url"] = dados_tmdb["trailer_url"]
-        payload["trailer_nome"] = dados_tmdb.get("trailer_nome")
-
-    if dados_tmdb.get("classificacao"):
-        payload["classificacao"] = dados_tmdb["classificacao"]
-
-    payload["generos"] = dados_tmdb.get("generos") or []
-    payload["tagline"] = dados_tmdb.get("tagline")
-    payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
-    payload["tmdb_recente"] = dados_tmdb.get("recente", False)
-    payload["campos_preenchidos_por_tmdb"] = preenchidos
-
-    return payload
-
-
-def _normalize_movie(raw: dict, item_id: str) -> dict:
     info = raw.get("info") or {}
     movie_data = raw.get("movie_data") or {}
 
     titulo = _safe(info, "name", "o_name") or _safe(movie_data, "name")
     capa = _safe(info, "movie_image", "cover_big", "cover")
-    banner = _safe(info, "backdrop_path", "movie_image")
+
+    banner = None
     backdrop_list = info.get("backdrop_path") or []
     if isinstance(backdrop_list, list) and backdrop_list:
         banner = backdrop_list[0]
+    elif isinstance(backdrop_list, str):
+        banner = backdrop_list
 
     trailer = _safe(info, "youtube_trailer", "trailer")
 
-    duracao = _safe(info, "duration", "duration_secs")
-    if duracao and str(duracao).endswith("s"):
-        try:
-            duracao = int(str(duracao).rstrip("s"))
-        except Exception:
-            pass
-
-    return {
+    payload = {
         "id": item_id,
         "tipo": "filme",
         "titulo": titulo,
         "titulo_original": _safe(info, "o_name"),
+        "tagline": None,
         "capa": capa,
+        "capa_grande": None,
         "banner": banner,
+        "banner_4k": None,
+        "logo": None,
+        "logo_original": None,
         "ano": _safe(info, "releasedate", "releaseDate", "year"),
         "data_lancamento": _safe(info, "releasedate", "releaseDate"),
-        "duracao": duracao,
+        "duracao": _safe(info, "duration"),
+        "duracao_min": _safe(info, "episode_run_time"),
         "score": _safe(info, "rating", "rating_5based"),
         "sinopse": _safe(info, "plot", "description"),
+        "generos": [],
         "genero": _safe(info, "genre"),
         "elenco": _safe(info, "cast", "actors"),
         "diretor": _safe(info, "director"),
         "pais": _safe(info, "country"),
         "trailer": trailer,
         "trailer_url": f"https://www.youtube.com/watch?v={trailer}" if trailer else None,
-        "qualidade": _quality_from_name(titulo or "") or _safe(info, "quality"),
+        "trailer_nome": None,
+        "classificacao": _safe(info, "mpaa_rating", "age"),
         "container": _safe(movie_data, "container_extension"),
         "url_stream": _safe(movie_data, "stream_url") or _build_stream_url("movie", item_id),
         "categoria": _safe(info, "category", "genre"),
-        "raw": raw,
+        "tmdb_id": None,
+        "tmdb_recente": False,
+        "campos_preenchidos_por_tmdb": [],
     }
 
+    if TMDB_ENABLED:
+        try:
+            dados_tmdb = await tmdb.buscar_filme(titulo or "", payload.get("ano"))
+            if dados_tmdb:
+                if dados_tmdb.get("sinopse"):
+                    payload["sinopse"] = dados_tmdb["sinopse"]
+                if dados_tmdb.get("banner"):
+                    payload["banner"] = dados_tmdb["banner"]
+                    payload["banner_4k"] = dados_tmdb.get("banner_4k")
+                if dados_tmdb.get("capa") and not payload["capa"]:
+                    payload["capa"] = dados_tmdb["capa"]
+                if dados_tmdb.get("generos"):
+                    payload["generos"] = dados_tmdb["generos"]
+                if dados_tmdb.get("classificacao") and not payload["classificacao"]:
+                    payload["classificacao"] = dados_tmdb["classificacao"]
+                if dados_tmdb.get("trailer_url"):
+                    payload["trailer_url"] = dados_tmdb["trailer_url"]
+                if dados_tmdb.get("score") and not payload["score"]:
+                    payload["score"] = dados_tmdb["score"]
+                payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
 
-def _normalize_series(raw: dict, item_id: str) -> dict:
+                if dados_tmdb.get("logo"):
+                    payload["logo"] = dados_tmdb["logo"]
+                    payload["logo_fonte"] = "tmdb"
+                elif dados_tmdb.get("tmdb_id"):
+                    logo_fanart = await logos.buscar_logo_fanart_movie(dados_tmdb["tmdb_id"])
+                    if logo_fanart:
+                        payload["logo"] = logo_fanart
+                        payload["logo_fonte"] = "fanart"
+        except Exception as e:
+            print(f"[!] TMDB falhou filme {item_id}: {e}")
+
+    _cache_put("movie", item_id, payload)
+    return payload
+
+
+async def fetch_series_info(item_id: str, force: bool = False) -> dict:
+    if not force:
+        cached = _cache_get("series", item_id)
+        if cached:
+            return cached
+
+    url = INFO_SERIES_URL.format(id=item_id)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        r = await client.get(url, headers={"User-Agent": USER_AGENT})
+        if r.status_code != 200:
+            raise ValueError("Provedor recusou")
+        raw = r.json()
+
     info = raw.get("info") or {}
     seasons = raw.get("seasons") or []
     episodes_map = raw.get("episodes") or {}
@@ -211,23 +218,31 @@ def _normalize_series(raw: dict, item_id: str) -> dict:
 
     eps_normalizados.sort(key=lambda e: (e["temporada"] or 0, e["episodio"] or 0))
 
-    return {
+    payload = {
         "id": item_id,
         "tipo": "serie",
         "titulo": titulo,
         "titulo_original": _safe(info, "original_name"),
+        "tagline": None,
         "capa": capa,
+        "capa_grande": None,
         "banner": banner,
+        "banner_4k": None,
+        "logo": None,
+        "logo_original": None,
         "ano": _safe(info, "releaseDate", "releasedate", "year"),
         "data_lancamento": _safe(info, "releaseDate", "releasedate"),
         "score": _safe(info, "rating", "rating_5based"),
         "sinopse": _safe(info, "plot", "description"),
+        "generos": [],
         "genero": _safe(info, "genre"),
         "elenco": _safe(info, "cast", "actors"),
         "diretor": _safe(info, "director"),
         "pais": _safe(info, "country"),
         "trailer": trailer,
         "trailer_url": f"https://www.youtube.com/watch?v={trailer}" if trailer else None,
+        "trailer_nome": None,
+        "classificacao": _safe(info, "mpaa_rating", "age"),
         "total_temporadas": len(seasons) or len({e["temporada"] for e in eps_normalizados}),
         "total_episodios": len(eps_normalizados),
         "temporadas": [
@@ -240,69 +255,42 @@ def _normalize_series(raw: dict, item_id: str) -> dict:
             for s in seasons
         ],
         "episodios": eps_normalizados,
-        "raw": raw,
+        "tmdb_id": None,
+        "tmdb_recente": False,
+        "campos_preenchidos_por_tmdb": [],
     }
 
-
-async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
-    if not force:
-        cached = _cache_get("movie", item_id)
-        if cached:
-            return cached
-
-    url = INFO_MOVIE_URL.format(id=item_id)
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": USER_AGENT})
-        r.raise_for_status()
-        raw = r.json()
-
-    if not raw or raw.get("info") is None:
-        raise ValueError("Provedor não retornou informações para esse ID")
-
-    normalized = _normalize_movie(raw, item_id)
-
     if TMDB_ENABLED:
         try:
-            dados_tmdb = await tmdb.buscar_filme(
-                normalized.get("titulo") or "",
-                normalized.get("ano"),
-            )
+            dados_tmdb = await tmdb.buscar_serie(titulo or "", payload.get("ano"))
             if dados_tmdb:
-                normalized = _preencher_com_tmdb(normalized, dados_tmdb)
+                if dados_tmdb.get("sinopse"):
+                    payload["sinopse"] = dados_tmdb["sinopse"]
+                if dados_tmdb.get("banner"):
+                    payload["banner"] = dados_tmdb["banner"]
+                    payload["banner_4k"] = dados_tmdb.get("banner_4k")
+                if dados_tmdb.get("capa") and not payload["capa"]:
+                    payload["capa"] = dados_tmdb["capa"]
+                if dados_tmdb.get("generos"):
+                    payload["generos"] = dados_tmdb["generos"]
+                if dados_tmdb.get("classificacao") and not payload["classificacao"]:
+                    payload["classificacao"] = dados_tmdb["classificacao"]
+                if dados_tmdb.get("trailer_url"):
+                    payload["trailer_url"] = dados_tmdb["trailer_url"]
+                if dados_tmdb.get("score") and not payload["score"]:
+                    payload["score"] = dados_tmdb["score"]
+                payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
+
+                if dados_tmdb.get("logo"):
+                    payload["logo"] = dados_tmdb["logo"]
+                    payload["logo_fonte"] = "tmdb"
+                elif dados_tmdb.get("tvdb_id"):
+                    logo_fanart = await logos.buscar_logo_fanart_tv(dados_tmdb["tvdb_id"])
+                    if logo_fanart:
+                        payload["logo"] = logo_fanart
+                        payload["logo_fonte"] = "fanart"
         except Exception as e:
-            print(f"[!] TMDB falhou pra filme {item_id}: {e}")
+            print(f"[!] TMDB falhou série {item_id}: {e}")
 
-    _cache_put("movie", item_id, normalized)
-    return normalized
-
-
-async def fetch_series_info(item_id: str, force: bool = False) -> dict:
-    if not force:
-        cached = _cache_get("series", item_id)
-        if cached:
-            return cached
-
-    url = INFO_SERIES_URL.format(id=item_id)
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": USER_AGENT})
-        r.raise_for_status()
-        raw = r.json()
-
-    if not raw or raw.get("info") is None:
-        raise ValueError("Provedor não retornou informações para esse ID")
-
-    normalized = _normalize_series(raw, item_id)
-
-    if TMDB_ENABLED:
-        try:
-            dados_tmdb = await tmdb.buscar_serie(
-                normalized.get("titulo") or "",
-                normalized.get("ano"),
-            )
-            if dados_tmdb:
-                normalized = _preencher_com_tmdb(normalized, dados_tmdb)
-        except Exception as e:
-            print(f"[!] TMDB falhou pra série {item_id}: {e}")
-
-    _cache_put("series", item_id, normalized)
-    return normalized
+    _cache_put("series", item_id, payload)
+    return payload

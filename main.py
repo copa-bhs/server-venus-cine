@@ -28,11 +28,8 @@ from proxy import (
 )
 import tmdb
 
-app = FastAPI(title="IPTV Organizer Pro", version="2.8.0")
+app = FastAPI(title="IPTV Organizer Pro", version="4.1.0")
 
-# ==========================================================
-# CORS — permite usar o painel HTML de qualquer origem
-# ==========================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,7 +46,7 @@ _HOME_CACHE_TTL = 300
 
 
 # ==========================================================
-# CACHE
+# CACHE / ÍNDICE
 # ==========================================================
 def cache_valid() -> bool:
     if not M3U_FILE.exists() or not META_FILE.exists():
@@ -72,16 +69,8 @@ def load_index_from_disk() -> bool:
     return False
 
 
-def rebuild_index_from_m3u() -> dict:
-    content = M3U_FILE.read_text(encoding="utf-8", errors="ignore")
-    raw = parse_m3u(content)
-    return build_index(raw)
-
-
 def _salvar_index():
-    INDEX_FILE.write_text(
-        json.dumps(_INDEX, ensure_ascii=False), encoding="utf-8"
-    )
+    INDEX_FILE.write_text(json.dumps(_INDEX, ensure_ascii=False), encoding="utf-8")
 
 
 def _rebuild_slugs():
@@ -106,7 +95,9 @@ async def fetch_and_rebuild(force: bool = False):
 
     print("[•] Processando M3U...")
     t1 = time.time()
-    _INDEX = rebuild_index_from_m3u()
+    content = M3U_FILE.read_text(encoding="utf-8", errors="ignore")
+    raw = parse_m3u(content)
+    _INDEX = build_index(raw)
     _salvar_index()
     _rebuild_slugs()
     print(f"[✓] Índice pronto em {time.time() - t1:.2f}s")
@@ -117,126 +108,41 @@ async def fetch_and_rebuild(force: bool = False):
 # COMPARAÇÃO
 # ==========================================================
 def _chave_filme(item: dict) -> str:
-    titulo = (item.get("titulo") or "").strip().lower()
-    ano = item.get("ano") or ""
-    return f"{titulo}|{ano}"
+    return f"{(item.get('titulo') or '').strip().lower()}|{item.get('ano') or ''}"
 
 
 def _chave_serie(item: dict) -> str:
     return (item.get("titulo") or "").strip().lower()
 
 
-def _chave_canal(item: dict) -> str:
-    return (item.get("titulo") or "").strip().lower()
-
-
 def _comparar_conjuntos(lista_antiga, lista_nova, fn_chave):
-    chaves_antigas = {fn_chave(i) for i in lista_antiga if fn_chave(i)}
-    return [i for i in lista_nova if fn_chave(i) and fn_chave(i) not in chaves_antigas]
-
-
-# ==========================================================
-# NOVIDADES
-# ==========================================================
-async def _enriquecer_lote_novidades(filmes, series):
-    if not TMDB_ENABLED:
-        for item in filmes + series:
-            item["classificacao"] = "catalogo"
-        return
-
-    limite = TMDB_MAX_PER_CYCLE
-
-    for item in filmes[:limite]:
-        dados = await tmdb.buscar_filme(item["titulo"], item.get("ano"))
-        if dados:
-            item["tmdb"] = {
-                "id": dados["tmdb_id"],
-                "release_date": dados["release_date"],
-                "ano_real": dados["ano"],
-                "score": dados["score"],
-                "sinopse": dados["sinopse"],
-                "capa_oficial": dados["capa"],
-                "banner_oficial": dados["banner"],
-                "logo": dados.get("logo"),
-                "trailer_url": dados.get("trailer_url"),
-                "classificacao": dados.get("classificacao"),
-                "generos": dados.get("generos"),
-                "recente": dados["recente"],
-            }
-            item["classificacao"] = "lancamento" if dados["recente"] else "catalogo"
-        else:
-            item["classificacao"] = "catalogo"
-
-    for item in series[:limite]:
-        dados = await tmdb.buscar_serie(item["titulo"], item.get("ano"))
-        if dados:
-            item["tmdb"] = {
-                "id": dados["tmdb_id"],
-                "release_date": dados["release_date"],
-                "ano_real": dados["ano"],
-                "score": dados["score"],
-                "sinopse": dados["sinopse"],
-                "capa_oficial": dados["capa"],
-                "banner_oficial": dados["banner"],
-                "logo": dados.get("logo"),
-                "trailer_url": dados.get("trailer_url"),
-                "classificacao": dados.get("classificacao"),
-                "generos": dados.get("generos"),
-                "recente": dados["recente"],
-            }
-            item["classificacao"] = "lancamento" if dados["recente"] else "catalogo"
-        else:
-            item["classificacao"] = "catalogo"
+    antigas = {fn_chave(i) for i in lista_antiga if fn_chave(i)}
+    return [i for i in lista_nova if fn_chave(i) and fn_chave(i) not in antigas]
 
 
 async def detectar_novidades(index_antigo: dict, index_novo: dict) -> dict:
     filmes_novos = _comparar_conjuntos(
-        index_antigo.get("filmes", []),
-        index_novo.get("filmes", []),
-        _chave_filme,
+        index_antigo.get("filmes", []), index_novo.get("filmes", []), _chave_filme
     )
     series_novas = _comparar_conjuntos(
-        index_antigo.get("series", []),
-        index_novo.get("series", []),
-        _chave_serie,
+        index_antigo.get("series", []), index_novo.get("series", []), _chave_serie
     )
     canais_novos = _comparar_conjuntos(
-        index_antigo.get("canais", []),
-        index_novo.get("canais", []),
-        _chave_canal,
+        index_antigo.get("canais", []), index_novo.get("canais", []), _chave_serie
     )
 
-    await _enriquecer_lote_novidades(filmes_novos, series_novas)
+    limite = TMDB_MAX_PER_CYCLE
 
-    lancamentos = []
-    catalogo = []
+    for item in filmes_novos[:limite]:
+        dados = await tmdb.buscar_filme(item.get("titulo") or "", item.get("ano"))
+        item["classificacao"] = "lancamento" if (dados and dados.get("recente")) else "catalogo"
 
-    for f in filmes_novos:
-        item = {
-            "id": f["id"],
-            "titulo": f["titulo"],
-            "ano": f.get("ano"),
-            "capa": f.get("capa"),
-            "categoria": f.get("categoria"),
-            "tipo": "filme",
-            "tmdb": f.get("tmdb"),
-            "classificacao": f.get("classificacao", "catalogo"),
-        }
-        (lancamentos if item["classificacao"] == "lancamento" else catalogo).append(item)
+    for item in series_novas[:limite]:
+        dados = await tmdb.buscar_serie(item.get("titulo") or "", item.get("ano"))
+        item["classificacao"] = "lancamento" if (dados and dados.get("recente")) else "catalogo"
 
-    for s in series_novas:
-        item = {
-            "id": s["id"],
-            "titulo": s["titulo"],
-            "ano": s.get("ano"),
-            "capa": s.get("capa"),
-            "categoria": s.get("categoria"),
-            "tipo": "serie",
-            "total_episodios": s.get("total_episodios"),
-            "tmdb": s.get("tmdb"),
-            "classificacao": s.get("classificacao", "catalogo"),
-        }
-        (lancamentos if item["classificacao"] == "lancamento" else catalogo).append(item)
+    lancamentos = [f for f in filmes_novos + series_novas if f.get("classificacao") == "lancamento"]
+    catalogo = [f for f in filmes_novos + series_novas if f.get("classificacao") == "catalogo"]
 
     return {
         "detectado_em": time.time(),
@@ -251,10 +157,7 @@ async def detectar_novidades(index_antigo: dict, index_novo: dict) -> dict:
         },
         "lancamentos": lancamentos[:50],
         "catalogo": catalogo[:100],
-        "canais": [
-            {"id": c["id"], "titulo": c["titulo"], "categoria": c.get("categoria")}
-            for c in canais_novos[:50]
-        ],
+        "canais": canais_novos[:50],
     }
 
 
@@ -264,27 +167,15 @@ def logar_novidades(nov: dict):
     if total == 0:
         print("[•] Nenhuma novidade detectada.")
         return
-
     print("")
     print("=" * 60)
     print(f"  🎉 NOVIDADES — {nov['detectado_em_str']}")
     print("=" * 60)
-    print(f"  🎬 Filmes novos:      {t['filmes_novos']}")
-    print(f"  📺 Séries novas:      {t['series_novas']}")
-    print(f"  📡 Canais novos:      {t['canais_novos']}")
-    print(f"  🌟 Lançamentos:       {t['lancamentos']}")
-    print(f"  📚 Catálogo novo:     {t['catalogo']}")
-    print("-" * 60)
-    if nov["lancamentos"]:
-        print("  🌟 LANÇAMENTOS RECENTES:")
-        for item in nov["lancamentos"][:10]:
-            ano = item.get("ano") or "s/ano"
-            print(f"     🆕 [{item['tipo'].upper()}] {item['titulo']} ({ano})")
-    if nov["catalogo"]:
-        print("  📚 NOVOS NO CATÁLOGO:")
-        for item in nov["catalogo"][:10]:
-            ano = item.get("ano") or "s/ano"
-            print(f"     ➕ [{item['tipo'].upper()}] {item['titulo']} ({ano})")
+    print(f"  🎬 Filmes novos:  {t['filmes_novos']}")
+    print(f"  📺 Séries novas:  {t['series_novas']}")
+    print(f"  📡 Canais novos:  {t['canais_novos']}")
+    print(f"  🌟 Lançamentos:   {t['lancamentos']}")
+    print(f"  📚 Catálogo novo: {t['catalogo']}")
     print("=" * 60)
     print("")
 
@@ -301,23 +192,22 @@ async def auto_refresh_loop():
         print(f"\n[•] Auto-refresh disparado ({time.strftime('%H:%M:%S')})")
 
         tmp_m3u = M3U_FILE.with_suffix(".new")
-        tmp_index = INDEX_FILE.with_suffix(".new")
-
         try:
+            index_antigo = _INDEX if _INDEX else {"filmes": [], "series": [], "canais": []}
+
             t0 = time.time()
             result = await parallel_download(IPTV_URL, tmp_m3u)
             print(f"[✓] Download: {result} em {time.time() - t0:.2f}s")
 
             content = tmp_m3u.read_text(encoding="utf-8", errors="ignore")
+            tmp_m3u.replace(M3U_FILE)
+
             raw = parse_m3u(content)
             novo_index = build_index(raw)
 
-            index_antigo = _INDEX if _INDEX else {"filmes": [], "series": [], "canais": []}
             novidades = await detectar_novidades(index_antigo, novo_index)
 
-            tmp_m3u.replace(M3U_FILE)
-            tmp_index.write_text(json.dumps(novo_index, ensure_ascii=False), encoding="utf-8")
-            tmp_index.replace(INDEX_FILE)
+            INDEX_FILE.write_text(json.dumps(novo_index, ensure_ascii=False), encoding="utf-8")
             META_FILE.write_text(json.dumps({"timestamp": time.time()}))
             _INDEX = novo_index
             _HOME_CACHE_TS = 0
@@ -332,11 +222,10 @@ async def auto_refresh_loop():
 
         except Exception as e:
             print(f"[!] Auto-refresh falhou: {e}")
-            for p in (tmp_m3u, tmp_index):
-                try:
-                    p.unlink(missing_ok=True)
-                except Exception:
-                    pass
+            try:
+                tmp_m3u.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 # ==========================================================
@@ -358,16 +247,15 @@ def paginate(items: list, page: int, size: int) -> dict:
     }
 
 
-def _add_slug_urls(item: dict, tipo: str | None = None):
-    """Adiciona slug e URL de stream com extensão .mp4."""
-    slug = slug_for(item, tipo)
-    if slug:
-        base = (PUBLIC_BASE_URL or "").rstrip("/")
-        item["slug"] = slug
-        if base:
-            item["url_stream"] = f"{base}/stream/{slug}.mp4"
-        else:
-            item["url_stream"] = f"/stream/{slug}.mp4"
+def _card(item: dict, tipo: str | None = None) -> dict:
+    return {
+        "id": item.get("id"),
+        "tipo": tipo or item.get("tipo") or "filme",
+        "titulo": item.get("titulo") or "",
+        "capa": item.get("capa"),
+        "ano": item.get("ano"),
+        "classificacao": item.get("classificacao"),
+    }
 
 
 # ==========================================================
@@ -406,27 +294,28 @@ async def shutdown():
 def root():
     return {
         "service": "IPTV Organizer Pro",
-        "version": "2.8.0",
+        "version": "4.1.0",
+        "storage": "JSON",
         "tmdb": TMDB_ENABLED,
         "proxy": True,
-        "cors": "habilitado (allow_origins=*)",
         "endpoints": {
             "GET  /home": "Dashboard 12 coleções + hero + trailers",
-            "GET  /stream/{slug}.mp4": "Proxy de stream (URL amigável)",
-            "GET  /stream/id/{id}": "Proxy via ID do painel",
-            "GET  /proxy/stats": "Monitor do proxy em tempo real",
+            "GET  /stream/{slug}.mp4": "Proxy de stream",
+            "GET  /stream/id/{id}.mp4": "Proxy via ID do painel",
+            "GET  /proxy/stats": "Monitor do proxy",
             "POST /refresh": "Força atualização do M3U",
             "GET  /status": "Estado + stats",
             "GET  /novidades": "Lançamentos vs catálogo novo",
             "POST /novidades/verificar": "Força detecção de novidades",
             "POST /trailers/verificar?limit=50": "Re-verifica trailers",
-            "GET  /filmes?page=1&size=30": "Filmes paginados",
-            "GET  /series?page=1&size=30": "Séries paginadas",
-            "GET  /canais?page=1&size=50": "Canais paginados",
+            "GET  /filmes?page=1&size=30": "Lista filmes",
+            "GET  /series?page=1&size=30": "Lista séries",
+            "GET  /canais?page=1&size=50": "Lista canais",
             "GET  /buscar?q=&tipo=": "Busca paginada",
             "GET  /categorias": "Categorias",
-            "GET  /info/filme/{id}": "Metadados ricos do filme",
-            "GET  /info/serie/{id}": "Metadados ricos da série",
+            "GET  /info/filme/{id}": "Detalhes do filme",
+            "GET  /info/serie/{id}": "Detalhes da série",
+            "GET  /admin/sem-logo": "Itens sem logo",
         },
     }
 
@@ -472,6 +361,7 @@ async def status():
         "valid": idade < CACHE_TTL,
         "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
         "tmdb_ativo": TMDB_ENABLED,
+        "storage": "JSON",
         "public_base_url": PUBLIC_BASE_URL,
         "enrichment": {
             "filmes_total": len(filmes),
@@ -508,18 +398,11 @@ def novidades(
     except Exception:
         return {"disponivel": False, "mensagem": "Erro ao ler arquivo."}
     data["disponivel"] = True
-    if apenas_lancamentos:
-        return {
-            "detectado_em_str": data["detectado_em_str"],
-            "total": len(data.get("lancamentos", [])),
-            **paginate(data.get("lancamentos", []), page, size),
-        }
     return data
 
 
 @app.post("/novidades/verificar")
 async def verificar_novidades():
-    global _INDEX
     try:
         t0 = time.time()
         tmp_m3u = M3U_FILE.with_suffix(".check")
@@ -568,8 +451,7 @@ def listar_filmes(
     if categoria:
         filmes = [f for f in filmes if f["categoria"].lower() == categoria.lower()]
     resp = paginate(filmes, page, size)
-    for it in resp["items"]:
-        _add_slug_urls(it, "filme")
+    resp["items"] = [_card(it, "filme") for it in resp["items"]]
     return resp
 
 
@@ -584,10 +466,8 @@ def listar_series(
     series = _INDEX.get("series", [])
     if categoria:
         series = [s for s in series if s["categoria"].lower() == categoria.lower()]
-    resumo = [{k: v for k, v in s.items() if k != "episodios"} for s in series]
-    resp = paginate(resumo, page, size)
-    for it in resp["items"]:
-        _add_slug_urls(it, "serie")
+    resp = paginate(series, page, size)
+    resp["items"] = [_card(it, "serie") for it in resp["items"]]
     return resp
 
 
@@ -603,8 +483,7 @@ def listar_canais(
     if categoria:
         canais = [c for c in canais if c["categoria"].lower() == categoria.lower()]
     resp = paginate(canais, page, size)
-    for it in resp["items"]:
-        _add_slug_urls(it, "canal")
+    resp["items"] = [_card(it, "canal") for it in resp["items"]]
     return resp
 
 
@@ -621,23 +500,18 @@ def buscar(
     resultados = []
 
     if tipo in (None, "filme"):
-        resultados += [
-            f for f in _INDEX.get("filmes", [])
-            if q_low in (f.get("titulo") or "").lower()
-        ]
+        for f in _INDEX.get("filmes", []):
+            if q_low in (f.get("titulo") or "").lower():
+                resultados.append(_card(f, "filme"))
     if tipo in (None, "serie"):
         for s in _INDEX.get("series", []):
             if q_low in (s.get("titulo") or "").lower():
-                resultados.append({k: v for k, v in s.items() if k != "episodios"})
+                resultados.append(_card(s, "serie"))
     if tipo in (None, "canal"):
-        resultados += [
-            c for c in _INDEX.get("canais", [])
-            if q_low in (c.get("titulo") or "").lower()
-        ]
-    resp = paginate(resultados, page, size)
-    for it in resp["items"]:
-        _add_slug_urls(it)
-    return resp
+        for c in _INDEX.get("canais", []):
+            if q_low in (c.get("titulo") or "").lower():
+                resultados.append(_card(c, "canal"))
+    return paginate(resultados, page, size)
 
 
 @app.get("/categorias")
@@ -658,39 +532,64 @@ def categorias():
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, force: bool = False):
     try:
-        data = await fetch_movie_info(filme_id, force=force)
-        _add_slug_urls(data, "filme")
-        return data
+        return await fetch_movie_info(filme_id, force=force)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code, "Provedor recusou a requisição")
+        raise HTTPException(e.response.status_code, "Provedor recusou")
     except httpx.RequestError as e:
-        raise HTTPException(502, f"Falha ao contatar o provedor: {e}")
+        raise HTTPException(502, f"Falha: {e}")
 
 
 @app.get("/info/serie/{serie_id}")
 async def info_serie(serie_id: str, force: bool = False):
     try:
-        data = await fetch_series_info(serie_id, force=force)
-        _add_slug_urls(data, "serie")
-        for ep in data.get("episodios", []):
-            t = ep.get("temporada")
-            e = ep.get("episodio")
-            if t and e:
-                base_slug = slug_for({"titulo": data.get("titulo"), "tipo": "serie"}, "serie")
-                if base_slug:
-                    slug_ep = f"{base_slug}-t{int(t):02d}-e{int(e):02d}"
-                    ep["slug"] = slug_ep
-                    base_url = (PUBLIC_BASE_URL or "").rstrip("/")
-                    ep["url_stream_proxy"] = f"{base_url}/stream/{slug_ep}.mp4" if base_url else f"/stream/{slug_ep}.mp4"
-        return data
+        return await fetch_series_info(serie_id, force=force)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code, "Provedor recusou a requisição")
+        raise HTTPException(e.response.status_code, "Provedor recusou")
     except httpx.RequestError as e:
-        raise HTTPException(502, f"Falha ao contatar o provedor: {e}")
+        raise HTTPException(502, f"Falha: {e}")
+
+
+# ==========================================================
+# ADMIN SEM LOGO
+# ==========================================================
+@app.get("/admin/sem-logo")
+def listar_sem_logo(
+    tipo: str | None = None,
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
+):
+    if not _INDEX:
+        raise HTTPException(503, "Índice não carregado.")
+    filmes_sem = []
+    for f in _INDEX.get("filmes", []):
+        if f.get("tmdb_enriquecido") and not f.get("logo"):
+            filmes_sem.append({
+                **_card(f, "filme"),
+                "tmdb_id": f.get("tmdb_id"),
+                "tmdb_url": f"https://www.themoviedb.org/movie/{f['tmdb_id']}" if f.get("tmdb_id") else None,
+                "score": f.get("score"),
+            })
+    series_sem = []
+    for s in _INDEX.get("series", []):
+        if s.get("tmdb_enriquecido") and not s.get("logo"):
+            series_sem.append({
+                **_card(s, "serie"),
+                "tmdb_id": s.get("tmdb_id"),
+                "tmdb_url": f"https://www.themoviedb.org/tv/{s['tmdb_id']}" if s.get("tmdb_id") else None,
+                "score": s.get("score"),
+            })
+    resultado = filmes_sem + series_sem if not tipo else (filmes_sem if tipo == "filme" else series_sem)
+    resultado.sort(key=lambda x: (x.get("titulo") or "").lower())
+    return {
+        "total_filmes_sem_logo": len(filmes_sem),
+        "total_series_sem_logo": len(series_sem),
+        "total_geral": len(resultado),
+        **paginate(resultado, page, size),
+    }
 
 
 # ==========================================================
@@ -698,18 +597,11 @@ async def info_serie(serie_id: str, force: bool = False):
 # ==========================================================
 @app.get("/stream/{slug_path:path}")
 async def proxy_por_slug(slug_path: str, request: Request):
-    """
-    Proxy de stream via slug amigável.
-    Aceita com ou sem extensão:
-      /stream/homem-aranha-de-volta-para-casa-2017
-      /stream/homem-aranha-de-volta-para-casa-2017.mp4
-    """
     slug = slug_path
     for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
         if slug.lower().endswith(ext):
             slug = slug[:-len(ext)]
             break
-
     item = get_by_slug(slug)
     if not item:
         raise HTTPException(404, "Slug não encontrado.")
@@ -718,13 +610,11 @@ async def proxy_por_slug(slug_path: str, request: Request):
 
 @app.get("/stream/id/{item_id}")
 async def proxy_por_id(item_id: str, request: Request):
-    """Proxy via ID do painel Xtream: /stream/id/2127 ou /stream/id/2127.mp4"""
     clean_id = item_id
     for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov"):
         if clean_id.lower().endswith(ext):
             clean_id = clean_id[:-len(ext)]
             break
-
     item = get_by_id(clean_id)
     if not item:
         raise HTTPException(404, "ID não encontrado.")
@@ -733,11 +623,7 @@ async def proxy_por_id(item_id: str, request: Request):
 
 @app.get("/proxy/stats")
 def proxy_monitor():
-    """Monitor do proxy em tempo real."""
-    return {
-        "slugs_carregados": total_slugs(),
-        **proxy_stats(),
-    }
+    return {"slugs_carregados": total_slugs(), **proxy_stats()}
 
 
 if __name__ == "__main__":

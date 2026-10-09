@@ -25,9 +25,16 @@ async def _enriquecer_item(item: dict, tipo: str):
             return
 
         item["tmdb_id"] = dados["tmdb_id"]
-        item["classificacao"] = dados.get("classificacao")
         item["score"] = dados.get("score")
-        item["generos"] = dados.get("generos") or []
+
+        if dados.get("classificacao"):
+            item["classificacao"] = dados["classificacao"]
+
+        if dados.get("generos"):
+            item["generos"] = dados["generos"]
+
+        if dados.get("sinopse"):
+            item["sinopse"] = dados["sinopse"]
 
         # Capa — séries SEMPRE sobrescrevem (M3U traz capa do episódio)
         if tipo == "serie":
@@ -37,9 +44,7 @@ async def _enriquecer_item(item: dict, tipo: str):
             if dados.get("capa") and not item.get("capa"):
                 item["capa"] = dados["capa"]
 
-        # ==========================================================
-        # LOGO — agregação multi-fonte: TMDB → Fanart.tv
-        # ==========================================================
+        # Logo multi-fonte: TMDB → Fanart
         logo_tmdb = dados.get("logo")
         logo_final = None
 
@@ -63,17 +68,14 @@ async def _enriquecer_item(item: dict, tipo: str):
             item["logo"] = logo_final
             item["logo_fonte"] = "tmdb" if logo_tmdb else "fanart"
 
-        # Banner 4K
         if dados.get("banner_4k"):
             item["banner_4k"] = dados["banner_4k"]
         if dados.get("banner"):
             item["banner"] = dados["banner"]
 
-        # Capa grande
         if dados.get("capa_grande"):
             item["capa_grande"] = dados["capa_grande"]
 
-        # Trailer
         if dados.get("trailer_url"):
             item["trailer_url"] = dados["trailer_url"]
             item["trailer_nome"] = dados.get("trailer_nome")
