@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import json
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,41 +8,70 @@ import httpx
 
 from config import (
     TMDB_API_KEY, TMDB_LANGUAGE, TMDB_ENABLED,
-    TMDB_RECENT_DAYS, TMDB_CACHE_DIR, USER_AGENT,
+    TMDB_RECENT_DAYS, USER_AGENT,
 )
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG  = "https://image.tmdb.org/t/p"
-TMDB_CACHE_TTL = 60 * 60 * 24 * 30
 
 
-def _cache_path(kind: str, chave: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in chave)[:120]
-    return TMDB_CACHE_DIR / f"{kind}_{safe}.json"
+# ==========================================================
+# NORMALIZAÇÃO DE CLASSIFICAÇÃO ETÁRIA
+# ==========================================================
+_MAPA_CLASSIFICACAO = {
+    "L": "L", "10": "10", "12": "12", "14": "14", "16": "16", "18": "18",
+    "G": "L", "PG": "10", "PG-13": "14", "R": "16", "NC-17": "18",
+    "NR": None, "UR": None,
+    "TV-G": "L", "TV-Y": "L", "TV-Y7": "10", "TV-PG": "10",
+    "TV-14": "14", "TV-MA": "18",
+    "U": "L", "12A": "12", "15": "16",
+    "APTA": "L", "7": "10", "13": "14",
+    "FSK 0": "L", "FSK 6": "10", "FSK 12": "12", "FSK 16": "16", "FSK 18": "18",
+    "Tout public": "L", "-10": "10", "-12": "12", "-16": "16", "-18": "18",
+    "M": "16", "MA15+": "16", "R18+": "18", "PG-13+": "14",
+    "14+": "14", "16+": "16", "18+": "18", "12+": "12", "10+": "10",
+    "ALL": "L", "T": "L", "PG-12": "12",
+}
 
 
-def _cache_get(kind: str, chave: str):
-    p = _cache_path(kind, chave)
-    if not p.exists():
+def normalizar_classificacao(bruto):
+    if not bruto:
         return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if time.time() - data.get("_ts", 0) < TMDB_CACHE_TTL:
-            return data.get("payload")
-    except Exception:
-        pass
+    c = str(bruto).strip().upper()
+    if not c:
+        return None
+
+    if c in _MAPA_CLASSIFICACAO:
+        return _MAPA_CLASSIFICACAO[c]
+
+    if c.isdigit():
+        n = int(c)
+        if n <= 9:
+            return "L"
+        if n <= 11:
+            return "10"
+        if n <= 13:
+            return "12"
+        if n <= 15:
+            return "14"
+        if n <= 17:
+            return "16"
+        return "18"
+
+    m = re.search(r'\d+', c)
+    if m:
+        return normalizar_classificacao(m.group())
+
+    if "LIVRE" in c or "FREE" in c or "ALL" in c:
+        return "L"
+
     return None
 
 
-def _cache_put(kind: str, chave: str, payload):
-    p = _cache_path(kind, chave)
-    p.write_text(
-        json.dumps({"_ts": time.time(), "payload": payload}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def _build_query(titulo: str, ano=None, extra: dict | None = None):
+# ==========================================================
+# HELPERS
+# ==========================================================
+def _build_query(titulo: str, ano=None):
     params = {
         "api_key": TMDB_API_KEY,
         "language": TMDB_LANGUAGE,
@@ -55,8 +83,6 @@ def _build_query(titulo: str, ano=None, extra: dict | None = None):
             params["year"] = str(int(ano))
         except Exception:
             pass
-    if extra:
-        params.update(extra)
     return params
 
 
@@ -133,67 +159,73 @@ def _melhor_trailer(videos: list):
     return trailers[0]
 
 
-def _classificacao_br_movie(release_dates: dict):
+# ==========================================================
+# CLASSIFICAÇÃO — tenta BR → PT → US → ES → qualquer
+# ==========================================================
+_PAISES_PREFERIDOS_MOVIE = ["BR", "PT", "US", "ES", "AR", "MX", "GB", "FR", "DE", "IT"]
+
+
+def _classificacao_movie(release_dates: dict):
     resultados = (release_dates or {}).get("results") or []
-    for pais in resultados:
-        if pais.get("iso_3166_1") == "BR":
-            for rd in pais.get("release_dates", []):
-                cert = (rd.get("certification") or "").strip()
-                if cert:
-                    return cert
-    for pais in resultados:
-        if pais.get("iso_3166_1") == "US":
-            for rd in pais.get("release_dates", []):
-                cert = (rd.get("certification") or "").strip()
-                if cert and cert not in ("NR", "UR"):
-                    return cert
-    return None
-
-
-def _classificacao_br_tv(content_ratings: dict):
-    resultados = (content_ratings or {}).get("results") or []
-    for pais in resultados:
-        if pais.get("iso_3166_1") == "BR":
-            rating = (pais.get("rating") or "").strip()
-            if rating:
-                return rating
-    for pais in resultados:
-        if pais.get("iso_3166_1") == "US":
-            rating = (pais.get("rating") or "").strip()
-            if rating and rating not in ("NR", "TV-NR"):
-                return rating
-    return None
-
-
-async def buscar_filme(titulo: str, ano=None):
-    if not TMDB_ENABLED or not titulo:
+    if not resultados:
         return None
 
-    chave = f"{titulo}|{ano or ''}"
-    cached = _cache_get("movie", chave)
-    if cached is not None:
-        return cached
+    for codigo in _PAISES_PREFERIDOS_MOVIE:
+        for pais in resultados:
+            if pais.get("iso_3166_1") == codigo:
+                for rd in pais.get("release_dates", []):
+                    cert = (rd.get("certification") or "").strip()
+                    if cert and cert not in ("NR", "UR", "N/A"):
+                        norm = normalizar_classificacao(cert)
+                        if norm:
+                            print(f"[TMDB] Classificação '{cert}' ({codigo}) → '{norm}'")
+                            return norm
+
+    for pais in resultados:
+        for rd in pais.get("release_dates", []):
+            cert = (rd.get("certification") or "").strip()
+            if cert and cert not in ("NR", "UR", "N/A"):
+                norm = normalizar_classificacao(cert)
+                if norm:
+                    return norm
+    return None
+
+
+_PAISES_PREFERIDOS_TV = ["BR", "PT", "US", "ES", "AR", "MX", "GB", "FR", "DE", "IT"]
+
+
+def _classificacao_tv(content_ratings: dict):
+    resultados = (content_ratings or {}).get("results") or []
+    if not resultados:
+        return None
+
+    for codigo in _PAISES_PREFERIDOS_TV:
+        for pais in resultados:
+            if pais.get("iso_3166_1") == codigo:
+                rating = (pais.get("rating") or "").strip()
+                if rating and rating not in ("NR", "TV-NR", "N/A"):
+                    norm = normalizar_classificacao(rating)
+                    if norm:
+                        print(f"[TMDB] Classificação '{rating}' ({codigo}) → '{norm}'")
+                        return norm
+
+    for pais in resultados:
+        rating = (pais.get("rating") or "").strip()
+        if rating and rating not in ("NR", "TV-NR", "N/A"):
+            norm = normalizar_classificacao(rating)
+            if norm:
+                return norm
+    return None
+
+
+# ==========================================================
+# BUSCA POR ID — SEM CACHE
+# ==========================================================
+async def buscar_filme_por_tmdb_id(tmdb_id: int):
+    if not TMDB_ENABLED or not tmdb_id:
+        return None
 
     async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            r = await client.get(
-                f"{TMDB_BASE}/search/movie",
-                params=_build_query(titulo, ano),
-                headers={"User-Agent": USER_AGENT},
-            )
-            r.raise_for_status()
-            data = r.json()
-        except Exception:
-            _cache_put("movie", chave, None)
-            return None
-
-        melhor = _pick_best(data.get("results", []), ano)
-        if not melhor:
-            _cache_put("movie", chave, None)
-            return None
-
-        tmdb_id = melhor["id"]
-
         try:
             r = await client.get(
                 f"{TMDB_BASE}/movie/{tmdb_id}",
@@ -207,8 +239,9 @@ async def buscar_filme(titulo: str, ano=None):
             )
             r.raise_for_status()
             full = r.json()
-        except Exception:
-            full = {}
+        except Exception as e:
+            print(f"[TMDB] Erro filme {tmdb_id}: {e}")
+            return None
 
     images = full.get("images") or {}
     videos = (full.get("videos") or {}).get("results") or []
@@ -218,12 +251,12 @@ async def buscar_filme(titulo: str, ano=None):
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
     trailer = _melhor_trailer(videos)
-    cert = _classificacao_br_movie(full.get("release_dates") or {})
+    cert = _classificacao_movie(full.get("release_dates") or {})
 
-    resultado = {
+    return {
         "tmdb_id": tmdb_id,
         "imdb_id": external.get("imdb_id"),
-        "titulo_tmdb": full.get("title") or melhor.get("title"),
+        "titulo_tmdb": full.get("title"),
         "titulo_original": full.get("original_title"),
         "tagline": full.get("tagline") or None,
         "release_date": release,
@@ -246,39 +279,13 @@ async def buscar_filme(titulo: str, ano=None):
         "popularidade": full.get("popularity"),
         "recente": _is_recent(release),
     }
-    _cache_put("movie", chave, resultado)
-    return resultado
 
 
-async def buscar_serie(titulo: str, ano=None):
-    if not TMDB_ENABLED or not titulo:
+async def buscar_serie_por_tmdb_id(tmdb_id: int):
+    if not TMDB_ENABLED or not tmdb_id:
         return None
 
-    chave = f"{titulo}|{ano or ''}"
-    cached = _cache_get("series", chave)
-    if cached is not None:
-        return cached
-
     async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            r = await client.get(
-                f"{TMDB_BASE}/search/tv",
-                params=_build_query(titulo, ano),
-                headers={"User-Agent": USER_AGENT},
-            )
-            r.raise_for_status()
-            data = r.json()
-        except Exception:
-            _cache_put("series", chave, None)
-            return None
-
-        melhor = _pick_best(data.get("results", []), ano)
-        if not melhor:
-            _cache_put("series", chave, None)
-            return None
-
-        tmdb_id = melhor["id"]
-
         try:
             r = await client.get(
                 f"{TMDB_BASE}/tv/{tmdb_id}",
@@ -292,8 +299,9 @@ async def buscar_serie(titulo: str, ano=None):
             )
             r.raise_for_status()
             full = r.json()
-        except Exception:
-            full = {}
+        except Exception as e:
+            print(f"[TMDB] Erro série {tmdb_id}: {e}")
+            return None
 
     images = full.get("images") or {}
     videos = (full.get("videos") or {}).get("results") or []
@@ -303,13 +311,13 @@ async def buscar_serie(titulo: str, ano=None):
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
     trailer = _melhor_trailer(videos)
-    cert = _classificacao_br_tv(full.get("content_ratings") or {})
+    cert = _classificacao_tv(full.get("content_ratings") or {})
 
-    resultado = {
+    return {
         "tmdb_id": tmdb_id,
         "tvdb_id": external.get("tvdb_id"),
         "imdb_id": external.get("imdb_id"),
-        "titulo_tmdb": full.get("name") or melhor.get("name"),
+        "titulo_tmdb": full.get("name"),
         "titulo_original": full.get("original_name"),
         "tagline": full.get("tagline") or None,
         "release_date": release,
@@ -333,13 +341,56 @@ async def buscar_serie(titulo: str, ano=None):
         "popularidade": full.get("popularity"),
         "recente": _is_recent(release),
     }
-    _cache_put("series", chave, resultado)
-    return resultado
 
 
-def limpar_cache():
-    import shutil
-    if TMDB_CACHE_DIR.exists():
-        shutil.rmtree(TMDB_CACHE_DIR)
-        TMDB_CACHE_DIR.mkdir(exist_ok=True)
-    print("[✓] Cache TMDB limpo.")
+# ==========================================================
+# BUSCA POR TÍTULO — SEM CACHE
+# ==========================================================
+async def buscar_filme(titulo: str, ano=None):
+    if not TMDB_ENABLED or not titulo:
+        return None
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            r = await client.get(
+                f"{TMDB_BASE}/search/movie",
+                params=_build_query(titulo, ano),
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            return None
+
+        melhor = _pick_best(data.get("results", []), ano)
+        if not melhor:
+            return None
+
+        tmdb_id = melhor["id"]
+
+    return await buscar_filme_por_tmdb_id(tmdb_id)
+
+
+async def buscar_serie(titulo: str, ano=None):
+    if not TMDB_ENABLED or not titulo:
+        return None
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            r = await client.get(
+                f"{TMDB_BASE}/search/tv",
+                params=_build_query(titulo, ano),
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            return None
+
+        melhor = _pick_best(data.get("results", []), ano)
+        if not melhor:
+            return None
+
+        tmdb_id = melhor["id"]
+
+    return await buscar_serie_por_tmdb_id(tmdb_id)

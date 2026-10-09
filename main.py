@@ -7,13 +7,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import (
-    IPTV_URL, CACHE_TTL,
-    M3U_FILE, META_FILE, INDEX_FILE, NOVIDADES_FILE,
+    CACHE_TTL,
+    FILMES_FILE, SERIES_FILE, CANAIS_FILE,
+    META_FILE, NOVIDADES_FILE,
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PORT,
     TMDB_ENABLED, TMDB_MAX_PER_CYCLE, PUBLIC_BASE_URL,
 )
-from downloader import parallel_download
-from parser import parse_m3u, build_index
+from parser import fetch_filmes, fetch_series, fetch_canais
 from info import fetch_movie_info, fetch_series_info
 from home import build_home_async
 from proxy import (
@@ -22,7 +22,7 @@ from proxy import (
 )
 import tmdb
 
-app = FastAPI(title="IPTV Organizer Pro", version="5.0.0")
+app = FastAPI(title="IPTV Organizer Pro", version="7.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,18 +32,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_INDEX: dict = {}
+# ==========================================================
+# ÍNDICES EM MEMÓRIA (3 listas separadas)
+# ==========================================================
+_FILMES: list = []
+_SERIES: list = []
+_CANAIS: list = []
+
 _AUTO_REFRESH_TASK = None
 _HOME_CACHE: dict = {}
 _HOME_CACHE_TS: float = 0
 _HOME_CACHE_TTL = 300
 
 
+def _stats() -> dict:
+    return {
+        "total_filmes": len(_FILMES),
+        "total_series": len(_SERIES),
+        "total_canais": len(_CANAIS),
+    }
+
+
 # ==========================================================
 # CACHE / ÍNDICE
 # ==========================================================
 def cache_valid() -> bool:
-    if not M3U_FILE.exists() or not META_FILE.exists():
+    if not META_FILE.exists():
         return False
     try:
         meta = json.loads(META_FILE.read_text())
@@ -52,54 +66,75 @@ def cache_valid() -> bool:
         return False
 
 
+def _load_json(path, default=None):
+    if not path.exists():
+        return default if default is not None else []
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default if default is not None else []
+
+
 def load_index_from_disk() -> bool:
-    global _INDEX
-    if INDEX_FILE.exists():
-        try:
-            _INDEX = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
-            return True
-        except Exception:
-            return False
-    return False
+    global _FILMES, _SERIES, _CANAIS
+    if not (FILMES_FILE.exists() and SERIES_FILE.exists() and CANAIS_FILE.exists()):
+        return False
+    try:
+        _FILMES = _load_json(FILMES_FILE)
+        _SERIES = _load_json(SERIES_FILE)
+        _CANAIS = _load_json(CANAIS_FILE)
+        return True
+    except Exception:
+        return False
 
 
-def _salvar_index():
-    INDEX_FILE.write_text(json.dumps(_INDEX, ensure_ascii=False), encoding="utf-8")
+def _save_all():
+    FILMES_FILE.write_text(json.dumps(_FILMES, ensure_ascii=False), encoding="utf-8")
+    SERIES_FILE.write_text(json.dumps(_SERIES, ensure_ascii=False), encoding="utf-8")
+    CANAIS_FILE.write_text(json.dumps(_CANAIS, ensure_ascii=False), encoding="utf-8")
 
 
 def _rebuild_slugs():
-    if _INDEX:
-        build_slug_map(_INDEX)
-        print(f"[✓] Slugs gerados: {total_slugs()}")
+    build_slug_map({
+        "filmes": _FILMES,
+        "series": _SERIES,
+        "canais": _CANAIS,
+    })
+    print(f"[✓] Slugs gerados: {total_slugs()}")
 
 
 async def fetch_and_rebuild(force: bool = False):
-    global _INDEX
+    global _FILMES, _SERIES, _CANAIS
+
     if not force and cache_valid() and load_index_from_disk():
-        print("[✓] Cache válido — usando índice em disco.")
+        print("[✓] Cache válido — usando arquivos em disco.")
         _rebuild_slugs()
         return
 
-    print("[•] Baixando lista IPTV em paralelo...")
+    print("[•] Atualizando catálogo via API Xtream...")
     t0 = time.time()
-    result = await parallel_download(IPTV_URL, M3U_FILE)
-    print(f"[✓] Download: {result} em {time.time() - t0:.2f}s")
 
+    # Baixa os 3 em paralelo — cada um salva seu arquivo
+    filmes, series, canais = await asyncio.gather(
+        fetch_filmes(),
+        fetch_series(),
+        fetch_canais(),
+    )
+
+    _FILMES = filmes
+    _SERIES = series
+    _CANAIS = canais
+
+    _save_all()
     META_FILE.write_text(json.dumps({"timestamp": time.time()}))
-
-    print("[•] Processando M3U...")
-    t1 = time.time()
-    content = M3U_FILE.read_text(encoding="utf-8", errors="ignore")
-    raw = parse_m3u(content)
-    _INDEX = build_index(raw)
-    _salvar_index()
     _rebuild_slugs()
-    print(f"[✓] Índice pronto em {time.time() - t1:.2f}s")
-    print(f"[✓] Stats: {_INDEX['stats']}")
+
+    print(f"[✓] Catálogo atualizado em {time.time() - t0:.2f}s")
+    print(f"[✓] Stats: {_stats()}")
 
 
 # ==========================================================
-# COMPARAÇÃO
+# COMPARAÇÃO DE NOVIDADES
 # ==========================================================
 def _chave_filme(item: dict) -> str:
     return f"{(item.get('titulo') or '').strip().lower()}|{item.get('ano') or ''}"
@@ -109,21 +144,15 @@ def _chave_serie(item: dict) -> str:
     return (item.get("titulo") or "").strip().lower()
 
 
-def _comparar_conjuntos(lista_antiga, lista_nova, fn_chave):
+def _comparar(lista_antiga, lista_nova, fn_chave):
     antigas = {fn_chave(i) for i in lista_antiga if fn_chave(i)}
     return [i for i in lista_nova if fn_chave(i) and fn_chave(i) not in antigas]
 
 
-async def detectar_novidades(index_antigo: dict, index_novo: dict) -> dict:
-    filmes_novos = _comparar_conjuntos(
-        index_antigo.get("filmes", []), index_novo.get("filmes", []), _chave_filme
-    )
-    series_novas = _comparar_conjuntos(
-        index_antigo.get("series", []), index_novo.get("series", []), _chave_serie
-    )
-    canais_novos = _comparar_conjuntos(
-        index_antigo.get("canais", []), index_novo.get("canais", []), _chave_serie
-    )
+async def detectar_novidades(filmes_ant, series_ant, canais_ant) -> dict:
+    filmes_novos = _comparar(filmes_ant, _FILMES, _chave_filme)
+    series_novas = _comparar(series_ant, _SERIES, _chave_serie)
+    canais_novos = _comparar(canais_ant, _CANAIS, _chave_serie)
 
     limite = TMDB_MAX_PER_CYCLE
 
@@ -159,7 +188,7 @@ def logar_novidades(nov: dict):
     t = nov["totais"]
     total = t["filmes_novos"] + t["series_novas"] + t["canais_novos"]
     if total == 0:
-        print("[•] Nenhuma novidade detectada.")
+        print("[•] Nenhuma novidade.")
         return
     print("")
     print("=" * 60)
@@ -173,35 +202,41 @@ def logar_novidades(nov: dict):
 
 
 # ==========================================================
-# AUTO-REFRESH (só JSON)
+# AUTO-REFRESH
 # ==========================================================
 async def auto_refresh_loop():
-    global _INDEX, _HOME_CACHE_TS
+    global _FILMES, _SERIES, _CANAIS, _HOME_CACHE_TS
     print(f"[✓] Auto-refresh ativo (a cada {CACHE_TTL}s = {CACHE_TTL // 60}min)")
 
     while True:
         await asyncio.sleep(CACHE_TTL)
         print(f"\n[•] Auto-refresh disparado ({time.strftime('%H:%M:%S')})")
 
-        tmp_m3u = M3U_FILE.with_suffix(".new")
         try:
-            index_antigo = _INDEX if _INDEX else {"filmes": [], "series": [], "canais": []}
+            # Snapshots antigos
+            filmes_ant = list(_FILMES)
+            series_ant = list(_SERIES)
+            canais_ant = list(_CANAIS)
 
+            # Baixa tudo de novo
             t0 = time.time()
-            result = await parallel_download(IPTV_URL, tmp_m3u)
-            print(f"[✓] Download: {result} em {time.time() - t0:.2f}s")
+            filmes, series, canais = await asyncio.gather(
+                fetch_filmes(),
+                fetch_series(),
+                fetch_canais(),
+            )
+            print(f"[✓] Baixado em {time.time() - t0:.2f}s")
 
-            content = tmp_m3u.read_text(encoding="utf-8", errors="ignore")
-            tmp_m3u.replace(M3U_FILE)
+            _FILMES = filmes
+            _SERIES = series
+            _CANAIS = canais
 
-            raw = parse_m3u(content)
-            novo_index = build_index(raw)
+            # Novidades
+            novidades = await detectar_novidades(filmes_ant, series_ant, canais_ant)
 
-            novidades = await detectar_novidades(index_antigo, novo_index)
-
-            INDEX_FILE.write_text(json.dumps(novo_index, ensure_ascii=False), encoding="utf-8")
+            # Salva tudo
+            _save_all()
             META_FILE.write_text(json.dumps({"timestamp": time.time()}))
-            _INDEX = novo_index
             _HOME_CACHE_TS = 0
             _rebuild_slugs()
 
@@ -210,14 +245,10 @@ async def auto_refresh_loop():
                 encoding="utf-8",
             )
             logar_novidades(novidades)
-            print(f"[✓] Stats: {novo_index['stats']}")
+            print(f"[✓] Stats: {_stats()}")
 
         except Exception as e:
             print(f"[!] Auto-refresh falhou: {e}")
-            try:
-                tmp_m3u.unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
 # ==========================================================
@@ -283,8 +314,8 @@ async def shutdown():
 def root():
     return {
         "service": "IPTV Organizer Pro",
-        "version": "5.0.0",
-        "storage": "JSON",
+        "version": "7.0.0",
+        "storage": "3 arquivos JSON (filmes / series / canais)",
         "tmdb": TMDB_ENABLED,
         "proxy": True,
     }
@@ -296,11 +327,15 @@ def root():
 @app.get("/home")
 async def home(force: bool = False):
     global _HOME_CACHE, _HOME_CACHE_TS
-    if not _INDEX:
-        raise HTTPException(503, "Índice não carregado. Chame /refresh.")
+    if not _FILMES and not _SERIES:
+        raise HTTPException(503, "Catálogo não carregado. Chame /refresh.")
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < _HOME_CACHE_TTL:
         return _HOME_CACHE
-    _HOME_CACHE = await build_home_async(_INDEX)
+    _HOME_CACHE = await build_home_async({
+        "filmes": _FILMES,
+        "series": _SERIES,
+        "stats": _stats(),
+    })
     _HOME_CACHE_TS = time.time()
     return _HOME_CACHE
 
@@ -326,10 +361,15 @@ async def status():
         "valid": idade < CACHE_TTL,
         "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
         "tmdb_ativo": TMDB_ENABLED,
-        "storage": "JSON",
+        "storage": "3 JSONs (filmes / series / canais)",
+        "arquivos": {
+            "filmes": str(FILMES_FILE.name),
+            "series": str(SERIES_FILE.name),
+            "canais": str(CANAIS_FILE.name),
+        },
         "public_base_url": PUBLIC_BASE_URL,
         "proxy": proxy_stats(),
-        "stats": _INDEX.get("stats", {}),
+        "stats": _stats(),
     }
 
 
@@ -338,7 +378,7 @@ async def refresh():
     global _HOME_CACHE_TS
     await fetch_and_rebuild(force=True)
     _HOME_CACHE_TS = 0
-    return {"ok": True, "stats": _INDEX.get("stats", {})}
+    return {"ok": True, "stats": _stats()}
 
 
 # ==========================================================
@@ -358,19 +398,23 @@ def novidades():
 
 @app.post("/novidades/verificar")
 async def verificar_novidades():
-    global _INDEX
+    global _FILMES, _SERIES, _CANAIS
     try:
         t0 = time.time()
-        tmp_m3u = M3U_FILE.with_suffix(".check")
-        await parallel_download(IPTV_URL, tmp_m3u)
-        content = tmp_m3u.read_text(encoding="utf-8", errors="ignore")
-        tmp_m3u.unlink(missing_ok=True)
+        filmes_ant = list(_FILMES)
+        series_ant = list(_SERIES)
+        canais_ant = list(_CANAIS)
 
-        raw = parse_m3u(content)
-        novo_index = build_index(raw)
+        filmes, series, canais = await asyncio.gather(
+            fetch_filmes(),
+            fetch_series(),
+            fetch_canais(),
+        )
+        _FILMES = filmes
+        _SERIES = series
+        _CANAIS = canais
 
-        index_antigo = _INDEX if _INDEX else {"filmes": [], "series": [], "canais": []}
-        novidades = await detectar_novidades(index_antigo, novo_index)
+        novidades = await detectar_novidades(filmes_ant, series_ant, canais_ant)
 
         NOVIDADES_FILE.write_text(
             json.dumps(novidades, ensure_ascii=False, indent=2),
@@ -396,9 +440,9 @@ def listar_filmes(
     size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     categoria: str | None = None,
 ):
-    if not _INDEX:
-        raise HTTPException(503, "Índice não carregado. Chame /refresh.")
-    filmes = _INDEX.get("filmes", [])
+    if not _FILMES:
+        raise HTTPException(503, "Filmes não carregados.")
+    filmes = _FILMES
     if categoria:
         filmes = [f for f in filmes if f["categoria"].lower() == categoria.lower()]
     resp = paginate(filmes, page, size)
@@ -412,9 +456,9 @@ def listar_series(
     size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     categoria: str | None = None,
 ):
-    if not _INDEX:
-        raise HTTPException(503, "Índice não carregado. Chame /refresh.")
-    series = _INDEX.get("series", [])
+    if not _SERIES:
+        raise HTTPException(503, "Séries não carregadas.")
+    series = _SERIES
     if categoria:
         series = [s for s in series if s["categoria"].lower() == categoria.lower()]
     resp = paginate(series, page, size)
@@ -428,9 +472,9 @@ def listar_canais(
     size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     categoria: str | None = None,
 ):
-    if not _INDEX:
-        raise HTTPException(503, "Índice não carregado. Chame /refresh.")
-    canais = _INDEX.get("canais", [])
+    if not _CANAIS:
+        raise HTTPException(503, "Canais não carregados.")
+    canais = _CANAIS
     if categoria:
         canais = [c for c in canais if c["categoria"].lower() == categoria.lower()]
     resp = paginate(canais, page, size)
@@ -445,20 +489,18 @@ def buscar(
     page: int = Query(1, ge=1),
     size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
 ):
-    if not _INDEX:
-        raise HTTPException(503, "Índice não carregado. Chame /refresh.")
     q_low = q.lower()
     resultados = []
     if tipo in (None, "filme"):
-        for f in _INDEX.get("filmes", []):
+        for f in _FILMES:
             if q_low in (f.get("titulo") or "").lower():
                 resultados.append(_card(f, "filme"))
     if tipo in (None, "serie"):
-        for s in _INDEX.get("series", []):
+        for s in _SERIES:
             if q_low in (s.get("titulo") or "").lower():
                 resultados.append(_card(s, "serie"))
     if tipo in (None, "canal"):
-        for c in _INDEX.get("canais", []):
+        for c in _CANAIS:
             if q_low in (c.get("titulo") or "").lower():
                 resultados.append(_card(c, "canal"))
     return paginate(resultados, page, size)
@@ -467,17 +509,17 @@ def buscar(
 @app.get("/categorias")
 def categorias():
     cats = {"filmes": set(), "series": set(), "canais": set()}
-    for f in _INDEX.get("filmes", []):
+    for f in _FILMES:
         cats["filmes"].add(f["categoria"])
-    for s in _INDEX.get("series", []):
+    for s in _SERIES:
         cats["series"].add(s["categoria"])
-    for c in _INDEX.get("canais", []):
+    for c in _CANAIS:
         cats["canais"].add(c["categoria"])
     return {k: sorted(v) for k, v in cats.items()}
 
 
 # ==========================================================
-# INFO VIA ID — SEM CACHE
+# INFO VIA ID
 # ==========================================================
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, force: bool = False):
