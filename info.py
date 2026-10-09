@@ -1,13 +1,7 @@
-from __future__ import annotations
-
-import json
-import time
 import httpx
-from pathlib import Path
 
 from config import (
     USER_AGENT,
-    INFO_CACHE_DIR,
     IPTV_HOST,
     IPTV_USERNAME,
     IPTV_PASSWORD,
@@ -22,33 +16,6 @@ PASSWORD = IPTV_PASSWORD
 
 INFO_MOVIE_URL  = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_vod_info&vod_id={{id}}"
 INFO_SERIES_URL = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_series_info&series_id={{id}}"
-
-INFO_TTL = 86400
-
-
-def _cache_path(kind: str, item_id: str) -> Path:
-    return INFO_CACHE_DIR / f"{kind}_{item_id}.json"
-
-
-def _cache_get(kind: str, item_id: str):
-    p = _cache_path(kind, item_id)
-    if not p.exists():
-        return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if time.time() - data.get("_ts", 0) < INFO_TTL:
-            return data.get("payload")
-    except Exception:
-        pass
-    return None
-
-
-def _cache_put(kind: str, item_id: str, payload: dict):
-    p = _cache_path(kind, item_id)
-    p.write_text(
-        json.dumps({"_ts": time.time(), "payload": payload}, ensure_ascii=False),
-        encoding="utf-8",
-    )
 
 
 def _safe(d, *keys, default=None):
@@ -76,12 +43,11 @@ def _build_episode_url(series_id: str, ep: dict) -> str:
     return f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{series_id}_{season}_{episode}.{ext}"
 
 
+# ==========================================================
+# FILME — pesquisa em tempo real
+# ==========================================================
 async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
-    if not force:
-        cached = _cache_get("movie", item_id)
-        if cached:
-            return cached
-
+    # Consulta Xtream
     url = INFO_MOVIE_URL.format(id=item_id)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         r = await client.get(url, headers={"User-Agent": USER_AGENT})
@@ -139,6 +105,7 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         "campos_preenchidos_por_tmdb": [],
     }
 
+    # Enriquece com TMDB em tempo real (sem cache)
     if TMDB_ENABLED:
         try:
             dados_tmdb = await tmdb.buscar_filme(titulo or "", payload.get("ano"))
@@ -152,7 +119,8 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
                     payload["capa"] = dados_tmdb["capa"]
                 if dados_tmdb.get("generos"):
                     payload["generos"] = dados_tmdb["generos"]
-                if dados_tmdb.get("classificacao") and not payload["classificacao"]:
+                # Sempre sobrescreve classificação com o valor normalizado
+                if dados_tmdb.get("classificacao"):
                     payload["classificacao"] = dados_tmdb["classificacao"]
                 if dados_tmdb.get("trailer_url"):
                     payload["trailer_url"] = dados_tmdb["trailer_url"]
@@ -160,6 +128,7 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
                     payload["score"] = dados_tmdb["score"]
                 payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
 
+                # Logo TMDB ou Fanart
                 if dados_tmdb.get("logo"):
                     payload["logo"] = dados_tmdb["logo"]
                     payload["logo_fonte"] = "tmdb"
@@ -171,16 +140,13 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         except Exception as e:
             print(f"[!] TMDB falhou filme {item_id}: {e}")
 
-    _cache_put("movie", item_id, payload)
     return payload
 
 
+# ==========================================================
+# SÉRIE — pesquisa em tempo real
+# ==========================================================
 async def fetch_series_info(item_id: str, force: bool = False) -> dict:
-    if not force:
-        cached = _cache_get("series", item_id)
-        if cached:
-            return cached
-
     url = INFO_SERIES_URL.format(id=item_id)
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         r = await client.get(url, headers={"User-Agent": USER_AGENT})
@@ -273,7 +239,7 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
                     payload["capa"] = dados_tmdb["capa"]
                 if dados_tmdb.get("generos"):
                     payload["generos"] = dados_tmdb["generos"]
-                if dados_tmdb.get("classificacao") and not payload["classificacao"]:
+                if dados_tmdb.get("classificacao"):
                     payload["classificacao"] = dados_tmdb["classificacao"]
                 if dados_tmdb.get("trailer_url"):
                     payload["trailer_url"] = dados_tmdb["trailer_url"]
@@ -292,5 +258,4 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         except Exception as e:
             print(f"[!] TMDB falhou série {item_id}: {e}")
 
-    _cache_put("series", item_id, payload)
     return payload

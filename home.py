@@ -1,10 +1,17 @@
-from __future__ import annotations
-
 import time
 import random
-from datetime import datetime, timedelta
+import asyncio
+import re
+import unicodedata
+from datetime import datetime
 
-from config import TMDB_ENABLED, PUBLIC_BASE_URL
+import httpx
+
+from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, USER_AGENT, PUBLIC_BASE_URL
+import tmdb
+
+
+TMDB_BASE = "https://api.themoviedb.org/3"
 
 
 def _semana_atual() -> int:
@@ -20,27 +27,286 @@ def _shuffle_semanal(items: list, salt: str = "") -> list:
     return copia
 
 
+# ==========================================================
+# NORMALIZAR TÍTULO PRA COMPARAR
+# ==========================================================
+def _normalizar(texto: str) -> str:
+    """Deixa o título em formato comparável."""
+    if not texto:
+        return ""
+    t = unicodedata.normalize("NFKD", texto)
+    t = t.encode("ascii", "ignore").decode("ascii")
+    t = t.lower()
+    t = re.sub(r'[^a-z0-9\s]', '', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+
+def _slugify(texto: str, ano=None) -> str:
+    if not texto:
+        return ""
+    t = unicodedata.normalize("NFKD", texto)
+    t = t.encode("ascii", "ignore").decode("ascii")
+    t = re.sub(r"[^\w\s-]", "", t.lower())
+    t = re.sub(r"[-\s]+", "-", t).strip("-")
+    t = re.sub(r"^(filme|serie|série|movie|tv|vod)[-\s]+", "", t)
+    if ano:
+        try:
+            t = f"{t}-{int(ano)}"
+        except Exception:
+            pass
+    return t
+
+
+# ==========================================================
+# ÍNDICE PARA BUSCA RÁPIDA
+# ==========================================================
+def _construir_indice_rapido(filmes: list, series: list) -> dict:
+    """
+    Monta dict: titulo_normalizado → item
+    Pra busca ser O(1) ao invés de varrer a lista toda.
+    """
+    indice = {"filmes": {}, "series": {}}
+
+    for f in filmes:
+        t = _normalizar(f.get("titulo") or "")
+        if t:
+            indice["filmes"][t] = f
+
+    for s in series:
+        t = _normalizar(s.get("titulo") or "")
+        if t:
+            indice["series"][t] = s
+
+    return indice
+
+
+def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str) -> dict | None:
+    """Procura por match exato e depois por match parcial."""
+    t_norm = _normalizar(titulo_tmdb)
+    if not t_norm:
+        return None
+
+    chave = "filmes" if tipo == "filme" else "series"
+
+    # 1. Match exato
+    if t_norm in indice[chave]:
+        return indice[chave][t_norm]
+
+    # 2. Match parcial: se um contém o outro
+    for titulo_iptv, item in indice[chave].items():
+        if not titulo_iptv:
+            continue
+        # Se o título do IPTV está dentro do título do TMDB ou vice-versa
+        if len(t_norm) > 4 and len(titulo_iptv) > 4:
+            if t_norm in titulo_iptv or titulo_iptv in t_norm:
+                return item
+
+    return None
+
+
+# ==========================================================
+# TMDB — BUSCAR TENDÊNCIAS
+# ==========================================================
+async def _tmdb_trending_movies() -> list:
+    """Filmes em alta essa semana."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/trending/movie/week",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:20]
+    except Exception:
+        return []
+
+
+async def _tmdb_trending_tv() -> list:
+    """Séries em alta essa semana."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/trending/tv/week",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:20]
+    except Exception:
+        return []
+
+
+async def _tmdb_now_playing_movies() -> list:
+    """Filmes nos cinemas agora."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/movie/now_playing",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "region": "BR"},
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:20]
+    except Exception:
+        return []
+
+
+async def _tmdb_on_the_air_tv() -> list:
+    """Séries que estão no ar agora."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/tv/on_the_air",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:20]
+    except Exception:
+        return []
+
+
+# ==========================================================
+# HERO — TMDB primeiro, IPTV depois
+# ==========================================================
+async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
+    if not TMDB_ENABLED:
+        return []
+
+    # 1. Consulta TMDB em paralelo
+    resultados_tmdb = await asyncio.gather(
+        _tmdb_trending_movies(),
+        _tmdb_trending_tv(),
+        _tmdb_now_playing_movies(),
+        _tmdb_on_the_air_tv(),
+        return_exceptions=True,
+    )
+
+    trending_movies  = resultados_tmdb[0] if isinstance(resultados_tmdb[0], list) else []
+    trending_tv      = resultados_tmdb[1] if isinstance(resultados_tmdb[1], list) else []
+    now_playing      = resultados_tmdb[2] if isinstance(resultados_tmdb[2], list) else []
+    on_the_air       = resultados_tmdb[3] if isinstance(resultados_tmdb[3], list) else []
+
+    # 2. Junta tudo, removendo duplicatas por tmdb_id
+    vistos = set()
+    candidatos = []
+
+    for item in now_playing + trending_movies:
+        tid = item.get("id")
+        if tid and tid not in vistos:
+            vistos.add(tid)
+            titulo = item.get("title") or item.get("name")
+            if titulo:
+                candidatos.append({"tipo": "filme", "titulo": titulo, "tmdb": item})
+
+    for item in trending_tv + on_the_air:
+        tid = item.get("id")
+        if tid and tid not in vistos:
+            vistos.add(tid)
+            titulo = item.get("name") or item.get("title")
+            if titulo:
+                candidatos.append({"tipo": "serie", "titulo": titulo, "tmdb": item})
+
+    if not candidatos:
+        print("[i] Hero: nada encontrado no TMDB trending")
+        return []
+
+    # 3. Monta índice rápido da lista IPTV
+    indice = _construir_indice_rapido(filmes, series)
+
+    # 4. Filtra: só os que existem na IPTV
+    encontrados = []
+    for c in candidatos:
+        match = _procurar_no_indice(indice, c["titulo"], c["tipo"])
+        if match:
+            encontrados.append({
+                "item_iptv": match,
+                "tmdb_item": c["tmdb"],
+                "tipo": c["tipo"],
+            })
+
+    if not encontrados:
+        print("[i] Hero: nenhum item do TMDB está na lista IPTV")
+        return []
+
+    print(f"[✓] Hero: {len(encontrados)} matches TMDB × IPTV")
+
+    # 5. Se tiver mais que n, escolhe semanalmente
+    if len(encontrados) > n:
+        randomizados = _shuffle_semanal(encontrados, "hero")
+        selecionados = randomizados[:n]
+    else:
+        selecionados = encontrados
+
+    # 6. Enriquecer com TMDB completo (banner, logo, sinopse)
+    async def _enriquecer(m):
+        item = m["item_iptv"]
+        tipo = m["tipo"]
+        try:
+            if tipo == "serie":
+                dados = await tmdb.buscar_serie(item.get("titulo") or "", item.get("ano"))
+            else:
+                dados = await tmdb.buscar_filme(item.get("titulo") or "", item.get("ano"))
+
+            if not dados:
+                return None
+
+            # Verifica se tem pelo menos banner + sinopse
+            if not dados.get("banner") or not dados.get("sinopse"):
+                return None
+
+            slug_base = _slugify(item.get("titulo") or "", item.get("ano"))
+            base = (PUBLIC_BASE_URL or "").rstrip("/")
+            url_stream = None
+            if slug_base:
+                url_stream = f"{base}/stream/{slug_base}.mp4" if base else f"/stream/{slug_base}.mp4"
+
+            return {
+                "id": item.get("id"),
+                "tipo": tipo,
+                "titulo": item.get("titulo"),
+                "banner": dados.get("banner_4k") or dados.get("banner"),
+                "capa": dados.get("capa") or item.get("capa"),
+                "logo": dados.get("logo"),
+                "sinopse": dados.get("sinopse"),
+                "score": dados.get("score"),
+                "classificacao": dados.get("classificacao"),
+                "ano": dados.get("ano") or item.get("ano"),
+                "generos": (dados.get("generos") or [])[:3],
+                "trailer_url": dados.get("trailer_url"),
+                "url_stream": url_stream,
+            }
+        except Exception as e:
+            print(f"[!] Hero enriquecimento falhou pra {item.get('titulo')}: {e}")
+            return None
+
+    resultados = await asyncio.gather(*[_enriquecer(m) for m in selecionados])
+    hero_final = [r for r in resultados if r]
+
+    print(f"[✓] Hero final: {len(hero_final)} slides")
+    return hero_final
+
+
+# ==========================================================
+# CARD SIMPLES (coleções) — SEM classificação
+# ==========================================================
+def _card_simples(item: dict, tipo: str | None = None) -> dict:
+    return {
+        "id": item.get("id"),
+        "tipo": item.get("tipo") or tipo or "filme",
+        "titulo": item.get("titulo"),
+        "capa": item.get("capa"),
+        "ano": item.get("ano"),
+    }
+
+
+# ==========================================================
+# COLETORES
+# ==========================================================
 def _tem_capa(item: dict) -> bool:
     return bool(item.get("capa"))
-
-
-def _tem_banner(item: dict) -> bool:
-    return bool(item.get("banner") or item.get("banner_4k"))
-
-
-def _tem_logo(item: dict) -> bool:
-    return bool(item.get("logo"))
-
-
-def _tem_sinopse(item: dict) -> bool:
-    return bool((item.get("sinopse") or "").strip())
-
-
-def _score(item: dict) -> float:
-    try:
-        return float(item.get("score") or 0)
-    except Exception:
-        return 0.0
 
 
 def _ano(item: dict):
@@ -50,207 +316,32 @@ def _ano(item: dict):
         return 0
 
 
-def _tem_genero(item: dict, generos_alvo: list) -> bool:
-    gen = [g.lower() for g in (item.get("generos") or [])]
-    for g in generos_alvo:
-        if g.lower() in gen:
-            return True
-    return False
-
-
-_GENEROS_EXCLUIDOS = {
-    "documentário", "documentario", "documentary",
-    "música", "musica", "music", "musical",
-    "talk show", "reality", "news", "notícias",
-}
-
-_TITULOS_EXCLUIDOS = [
-    "rock in rio", "ao vivo", "live at", "concert", "concerto",
-    "documentário", "trailer", "making of", "bastidores",
-    "coletânea", "coletanea", "trilha sonora",
-]
-
-
-def _elegivel_top10(item: dict) -> bool:
-    for g in (item.get("generos") or []):
-        if g.strip().lower() in _GENEROS_EXCLUIDOS:
-            return False
-    titulo = (item.get("titulo") or "").lower()
-    for termo in _TITULOS_EXCLUIDOS:
-        if termo in titulo:
-            return False
-    cat = (item.get("categoria") or "").lower()
-    if any(t in cat for t in ("documentário", "documentario", "musical", "show")):
-        return False
-    return True
-
-
-def _elegivel_hero(item: dict) -> bool:
-    """Hero exige capa, banner, sinopse e score decente."""
-    if not _tem_capa(item):
-        return False
-    if not _tem_banner(item):
-        return False
-    if not _tem_sinopse(item):
-        return False
-    if _score(item) < 5.0:
-        return False
-    return _elegivel_top10(item)
-
-
-def _tipo_do_item(item: dict, tipo_fallback: str | None = None) -> str:
-    t = (item.get("tipo") or "").lower()
-    if t in ("filme", "movie"):
-        return "filme"
-    if t in ("serie", "série", "series"):
-        return "serie"
-    if t == "canal":
-        return "canal"
-    if item.get("episodios") or item.get("total_temporadas") is not None:
-        return "serie"
-    return tipo_fallback or "filme"
-
-
-# ==========================================================
-# CARD SIMPLES (usado em coleções, listagens, busca)
-# ==========================================================
-def _card_simples(item: dict, tipo: str | None = None) -> dict:
-    return {
-        "id": item.get("id"),
-        "tipo": _tipo_do_item(item, tipo),
-        "titulo": item.get("titulo"),
-        "capa": item.get("capa"),
-        "ano": item.get("ano"),
-        "classificacao": item.get("classificacao"),
-    }
-
-
-# ==========================================================
-# CARD HERO (rico — banner, logo, sinopse, gêneros)
-# ==========================================================
-def _card_hero(item: dict, tipo: str | None = None) -> dict:
-    slug = item.get("slug")
-    base = (PUBLIC_BASE_URL or "").rstrip("/")
-    url_stream = None
-    if slug:
-        url_stream = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
-
-    return {
-        "id": item.get("id"),
-        "tipo": _tipo_do_item(item, tipo),
-        "titulo": item.get("titulo"),
-        # imagem de FUNDO do slide (banner, não capa)
-        "banner": item.get("banner_4k") or item.get("banner") or item.get("capa"),
-        # capa (poster vertical) — fallback visual
-        "capa": item.get("capa"),
-        # logo transparente (Netflix style)
-        "logo": item.get("logo"),
-        # conteúdo extra
-        "sinopse": item.get("sinopse"),
-        "score": item.get("score"),
-        "classificacao": item.get("classificacao"),
-        "ano": item.get("ano"),
-        "generos": (item.get("generos") or [])[:3],
-        "trailer_url": item.get("trailer_url"),
-        "url_stream": url_stream,
-    }
-
-
-# ==========================================================
-# HERO
-# ==========================================================
-def _build_hero(filmes: list, series: list, n: int = 5) -> list:
-    """
-    Monta o hero com prioridade por qualidade visual:
-      1. banner_4k + logo + sinopse (melhor)
-      2. banner + logo + sinopse
-      3. banner + sinopse
-    """
-    todos = filmes + series
-    elegiveis = [i for i in todos if _elegivel_hero(i)]
-
-    if not elegiveis:
-        return []
-
-    def prioridade(item: dict) -> tuple:
-        tem_banner_4k = bool(item.get("banner_4k"))
-        tem_banner = _tem_banner(item)
-        tem_logo = _tem_logo(item)
-
-        if tem_banner_4k and tem_logo:
-            tier = 0
-        elif tem_banner and tem_logo:
-            tier = 1
-        elif tem_banner:
-            tier = 2
-        else:
-            tier = 3
-
-        ano = _ano(item)
-        recente = 0 if ano >= 2023 else (1 if ano >= 2020 else 2)
-        return (tier, recente, -_score(item))
-
-    elegiveis.sort(key=prioridade)
-    top = elegiveis[:40]
-
-    randomizados = _shuffle_semanal(top, "hero")
-    return [_card_hero(i) for i in randomizados[:n]]
-
-
-# ==========================================================
-# COLETORES
-# ==========================================================
-def _top_por_score(itens: list, n: int = 10, filtrar_elegiveis: bool = True) -> list:
-    validos = [i for i in itens if _tem_capa(i) and _score(i) > 0]
-    if filtrar_elegiveis:
-        validos = [i for i in validos if _elegivel_top10(i)]
-    validos.sort(key=_score, reverse=True)
-    return validos[:n]
-
-
-def _top_series_fallback(series: list, n: int = 10) -> list:
-    validos = [s for s in series if _tem_capa(s)]
-    validos.sort(key=lambda s: (-(s.get("total_episodios") or 0), -_ano(s)))
-    return validos[:n]
-
-
-def _top_por_ano(itens: list, n: int = 15) -> list:
+def _por_ano(itens: list, n: int = 15) -> list:
     validos = [i for i in itens if _tem_capa(i) and _ano(i) > 0]
     validos.sort(key=_ano, reverse=True)
     return validos[:n]
 
 
-def _por_genero(itens: list, generos: list, n: int = 15) -> list:
-    validos = [i for i in itens if _tem_capa(i) and _tem_genero(i, generos)]
-    validos.sort(key=_score, reverse=True)
-    return validos[:n]
-
-
-def _bem_avaliados(itens: list, min_score: float = 8.0, n: int = 15) -> list:
-    validos = [i for i in itens if _tem_capa(i) and _score(i) >= min_score and _elegivel_top10(i)]
-    validos.sort(key=_score, reverse=True)
-    return validos[:n]
-
-
-def _recentes(itens: list, n: int = 20) -> list:
-    limite = datetime.now() - timedelta(days=365)
+def _por_categoria(itens: list, palavras: list, n: int = 15) -> list:
     validos = []
     for i in itens:
-        ano = _ano(i)
-        if ano and _tem_capa(i) and ano >= limite.year:
+        if not _tem_capa(i):
+            continue
+        cat = (i.get("categoria") or "").lower()
+        if any(p.lower() in cat for p in palavras):
             validos.append(i)
     validos.sort(key=_ano, reverse=True)
     return validos[:n]
 
 
 # ==========================================================
-# 12 COLEÇÕES (cards simples)
+# 12 COLEÇÕES
 # ==========================================================
 def _construir_colecoes(filmes: list, series: list) -> list:
     todos = filmes + series
     colecoes = []
 
-    def add(id_, titulo, itens, tipo_padrao: str | None = None):
+    def add(id_, titulo, itens, tipo_padrao=None):
         if not itens:
             return
         items_fmt = [_card_simples(it, tipo_padrao) for it in itens]
@@ -261,64 +352,38 @@ def _construir_colecoes(filmes: list, series: list) -> list:
             "items": items_fmt,
         })
 
-    add("top10_filmes", "🏆 Top 10 Filmes", _top_por_score(filmes, 10), "filme")
-    top_series = _top_por_score(series, 10) or _top_series_fallback(series, 10)
-    add("top10_series", "🏆 Top 10 Séries", top_series, "serie")
-
-    altos_f = _top_por_score(filmes, 30)
-    altos_s = _top_por_score(series, 30) or _top_series_fallback(series, 30)
-    em_alta = _shuffle_semanal(altos_f + altos_s, "em_alta")[:15]
-    add("em_alta", "🔥 Em Alta", em_alta)
-
-    lanc = [i for i in _recentes(filmes, 30) if _elegivel_top10(i)]
-    add("lancamentos", "🆕 Lançamentos", lanc[:20], "filme")
-    add("acao", "💥 Ação", _por_genero(todos, ["Ação", "Action", "Aventura", "Adventure"], 15))
-    add("comedia", "😂 Comédia", _por_genero(todos, ["Comédia", "Comedy"], 15))
-    add("drama", "🎭 Drama", _por_genero(todos, ["Drama"], 15))
-    add("terror", "👻 Terror", _por_genero(todos, ["Terror", "Horror"], 15))
-    add("ficcao", "🚀 Ficção Científica", _por_genero(todos, ["Ficção científica", "Science Fiction", "Sci-Fi"], 15))
-    add("animacao", "🎨 Animação", _por_genero(todos, ["Animação", "Animation"], 15))
-    add("bem_avaliados", "⭐ Bem Avaliados", _bem_avaliados(todos, 8.0, 15))
-    add("catalogo_novo", "📚 Catálogo Novo", _top_por_ano(todos, 15))
+    add("top10_filmes", "🎬 Filmes", _por_ano(filmes, 30)[:10], "filme")
+    add("top10_series", "📺 Séries", _por_ano(series, 30)[:10], "serie")
+    add("em_alta", "🔥 Em Alta", _por_ano(todos, 15))
+    add("lancamentos", "🆕 Lançamentos", _por_ano(filmes, 20), "filme")
+    add("acao", "💥 Ação", _por_categoria(todos, ["ação", "action", "aventura"]))
+    add("comedia", "😂 Comédia", _por_categoria(todos, ["comédia", "comedy"]))
+    add("drama", "🎭 Drama", _por_categoria(todos, ["drama"]))
+    add("terror", "👻 Terror", _por_categoria(todos, ["terror", "horror", "suspense"]))
+    add("ficcao", "🚀 Ficção", _por_categoria(todos, ["ficção", "sci-fi", "ficcao"]))
+    add("animacao", "🎨 Animação", _por_categoria(todos, ["animação", "animation", "anime", "infantil"]))
+    add("romance", "💕 Romance", _por_categoria(todos, ["romance", "romântico"]))
+    add("catalogo_novo", "📚 Catálogo Novo", _por_ano(todos, 15))
 
     return colecoes
 
 
 # ==========================================================
-# TRAILERS
-# ==========================================================
-def _construir_trailers(filmes: list, series: list, n: int = 10) -> list:
-    todos = []
-    for f in filmes:
-        if f.get("trailer_url"):
-            card = _card_simples(f, "filme")
-            card["trailer_url"] = f.get("trailer_url")
-            card["banner"] = f.get("banner") or f.get("capa")
-            todos.append(card)
-    for s in series:
-        if s.get("trailer_url"):
-            card = _card_simples(s, "serie")
-            card["trailer_url"] = s.get("trailer_url")
-            card["banner"] = s.get("banner") or s.get("capa")
-            todos.append(card)
-    randomizados = _shuffle_semanal(todos, "trailers")
-    return randomizados[:n]
-
-
-# ==========================================================
 # BUILDER PRINCIPAL
 # ==========================================================
-def build_home(index: dict) -> dict:
+async def build_home_async(index: dict) -> dict:
     filmes = index.get("filmes", [])
     series = index.get("series", [])
+
+    hero = await _montar_hero_async(filmes, series, 5)
 
     return {
         "gerado_em": time.time(),
         "gerado_em_str": time.strftime("%Y-%m-%d %H:%M:%S"),
         "semana_iso": _semana_atual(),
         "tmdb_ativo": TMDB_ENABLED,
-        "hero": _build_hero(filmes, series, 5),
+        "hero": hero,
         "colecoes": _construir_colecoes(filmes, series),
-        "trailers": _construir_trailers(filmes, series, 10),
+        "trailers": [],
         "stats": index.get("stats", {}),
     }
