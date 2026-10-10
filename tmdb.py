@@ -127,16 +127,62 @@ def _melhor_logo(logos: list, lang: str = "pt"):
     return logos[0].get("file_path")
 
 
+# ==========================================================
+# BACKDROP — prioriza textless (sem texto embutido)
+# ==========================================================
 def _melhor_backdrop(backdrops: list, lang: str = "pt"):
+    """
+    Escolhe o melhor backdrop (imagem de fundo 16:9) para o hero.
+
+    IMPORTANTE: o hero sobrepõe a LOGO do filme em cima do backdrop.
+    Se usarmos um backdrop COM TEXTO, o título do filme fica duplicado
+    (uma vez na imagem, outra vez na logo).
+
+    Por isso a ordem de prioridade é:
+      1. Textless (iso_639_1 == None) com resolução >= 1280px
+      2. Qualquer textless (mesmo pequeno)
+      3. Backdrop no idioma preferido (mesmo com texto)
+      4. O maior disponível (qualquer idioma)
+    """
     if not backdrops:
         return None
+
+    # 1. Textless + boa resolução
+    limpos_grandes = [
+        bd for bd in backdrops
+        if bd.get("iso_639_1") is None
+        and (bd.get("width") or 0) >= 1280
+    ]
+    if limpos_grandes:
+        melhor = max(
+            limpos_grandes,
+            key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
+        )
+        print(f"[TMDB] backdrop textless {melhor.get('width')}x{melhor.get('height')}")
+        return melhor.get("file_path")
+
+    # 2. Qualquer textless
+    limpos = [bd for bd in backdrops if bd.get("iso_639_1") is None]
+    if limpos:
+        melhor = max(
+            limpos,
+            key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
+        )
+        print(f"[TMDB] backdrop textless (resolução menor)")
+        return melhor.get("file_path")
+
+    # 3. Idioma preferido
     for bd in backdrops:
         if bd.get("iso_639_1") == lang:
+            print(f"[TMDB] backdrop em {lang} (COM texto embutido)")
             return bd.get("file_path")
-    for bd in backdrops:
-        if bd.get("iso_639_1") is None:
-            return bd.get("file_path")
-    maior = max(backdrops, key=lambda x: (x.get("width") or 0) * (x.get("height") or 0))
+
+    # 4. O maior disponível
+    maior = max(
+        backdrops,
+        key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
+    )
+    print(f"[TMDB] backdrop fallback (maior disponível)")
     return maior.get("file_path")
 
 
@@ -233,7 +279,7 @@ async def buscar_filme_por_tmdb_id(tmdb_id: int):
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
                     "append_to_response": "images,videos,release_dates,external_ids",
-                    "include_image_language": f"{TMDB_LANGUAGE[:2]},en,null",
+                    "include_image_language": f"null,{TMDB_LANGUAGE[:2]},en",
                 },
                 headers={"User-Agent": USER_AGENT},
             )
@@ -293,7 +339,7 @@ async def buscar_serie_por_tmdb_id(tmdb_id: int):
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
                     "append_to_response": "images,videos,content_ratings,external_ids",
-                    "include_image_language": f"{TMDB_LANGUAGE[:2]},en,null",
+                    "include_image_language": f"null,{TMDB_LANGUAGE[:2]},en",
                 },
                 headers={"User-Agent": USER_AGENT},
             )
