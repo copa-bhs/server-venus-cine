@@ -39,6 +39,42 @@ def _normalizar(texto: str) -> str:
     return t
 
 
+def _normalizar_titulo(titulo: str) -> str:
+    """Remove acentos, pontuação e sufixos de qualidade pra comparar."""
+    if not titulo:
+        return ""
+    t = unicodedata.normalize("NFKD", titulo)
+    t = t.encode("ascii", "ignore").decode("ascii")
+    t = t.lower()
+    # Remove sufixos de qualidade/idioma
+    t = re.sub(r'\b(4k|uhd|fhd|hd|sd|cam|dublado|legendado|dub|leg)\b', '', t)
+    # Remove ano entre parênteses
+    t = re.sub(r'\(?\b(19|20)\d{2}\b\)?', '', t)
+    # Remove pontuação e símbolos
+    t = re.sub(r'[^a-z0-9\s]', '', t)
+    # Remove espaços duplos
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+
+def _deduplicar(itens: list) -> list:
+    """
+    Remove duplicatas por título normalizado.
+    Mantém o primeiro (que geralmente é o de melhor qualidade).
+    """
+    vistos = set()
+    resultado = []
+    for item in itens:
+        chave = _normalizar_titulo(item.get("titulo") or "")
+        if not chave:
+            continue
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        resultado.append(item)
+    return resultado
+
+
 def _slugify(texto: str, ano=None) -> str:
     if not texto:
         return ""
@@ -213,7 +249,6 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
     else:
         selecionados = encontrados
 
-    # Enriquecer com TMDB completo + Fanart fallback pra logo
     async def _enriquecer(m):
         item = m["item_iptv"]
         tipo = m["tipo"]
@@ -226,9 +261,7 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
             if not dados:
                 return None
 
-            # ==========================================================
-            # LOGO: TMDB primeiro, Fanart como fallback (igual ao /info)
-            # ==========================================================
+            # LOGO: TMDB primeiro, Fanart como fallback
             logo_final = dados.get("logo")
             logo_fonte = "tmdb" if logo_final else None
 
@@ -248,7 +281,6 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 except Exception as e:
                     print(f"[!] Fanart falhou pra {item.get('titulo')}: {e}")
 
-            # Banner: prioriza textless que veio do tmdb.py
             banner = dados.get("banner_4k") or dados.get("banner")
 
             slug_base = _slugify(item.get("titulo") or "", item.get("ano"))
@@ -313,8 +345,10 @@ def _ano(item: dict):
 
 
 def _por_ano(itens: list, n: int = 15) -> list:
+    """Top N mais recentes, SEM duplicatas."""
     validos = [i for i in itens if _tem_capa(i) and _ano(i) > 0]
     validos.sort(key=_ano, reverse=True)
+    validos = _deduplicar(validos)
     return validos[:n]
 
 
@@ -327,6 +361,7 @@ def _por_categoria(itens: list, palavras: list, n: int = 15) -> list:
         if any(p.lower() in cat for p in palavras):
             validos.append(i)
     validos.sort(key=_ano, reverse=True)
+    validos = _deduplicar(validos)
     return validos[:n]
 
 
@@ -338,6 +373,9 @@ def _construir_colecoes(filmes: list, series: list) -> list:
     colecoes = []
 
     def add(id_, titulo, itens, tipo_padrao=None):
+        if not itens:
+            return
+        itens = _deduplicar(itens)
         if not itens:
             return
         items_fmt = [_card_simples(it, tipo_padrao) for it in itens]
