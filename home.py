@@ -9,6 +9,7 @@ import httpx
 
 from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, USER_AGENT, PUBLIC_BASE_URL
 import tmdb
+import logos
 
 
 TMDB_BASE = "https://api.themoviedb.org/3"
@@ -27,11 +28,7 @@ def _shuffle_semanal(items: list, salt: str = "") -> list:
     return copia
 
 
-# ==========================================================
-# NORMALIZAR TÍTULO PRA COMPARAR
-# ==========================================================
 def _normalizar(texto: str) -> str:
-    """Deixa o título em formato comparável."""
     if not texto:
         return ""
     t = unicodedata.normalize("NFKD", texto)
@@ -59,57 +56,41 @@ def _slugify(texto: str, ano=None) -> str:
 
 
 # ==========================================================
-# ÍNDICE PARA BUSCA RÁPIDA
+# ÍNDICE RÁPIDO DA LISTA IPTV
 # ==========================================================
 def _construir_indice_rapido(filmes: list, series: list) -> dict:
-    """
-    Monta dict: titulo_normalizado → item
-    Pra busca ser O(1) ao invés de varrer a lista toda.
-    """
     indice = {"filmes": {}, "series": {}}
-
     for f in filmes:
         t = _normalizar(f.get("titulo") or "")
         if t:
             indice["filmes"][t] = f
-
     for s in series:
         t = _normalizar(s.get("titulo") or "")
         if t:
             indice["series"][t] = s
-
     return indice
 
 
 def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str) -> dict | None:
-    """Procura por match exato e depois por match parcial."""
     t_norm = _normalizar(titulo_tmdb)
     if not t_norm:
         return None
-
     chave = "filmes" if tipo == "filme" else "series"
-
-    # 1. Match exato
     if t_norm in indice[chave]:
         return indice[chave][t_norm]
-
-    # 2. Match parcial: se um contém o outro
     for titulo_iptv, item in indice[chave].items():
         if not titulo_iptv:
             continue
-        # Se o título do IPTV está dentro do título do TMDB ou vice-versa
         if len(t_norm) > 4 and len(titulo_iptv) > 4:
             if t_norm in titulo_iptv or titulo_iptv in t_norm:
                 return item
-
     return None
 
 
 # ==========================================================
-# TMDB — BUSCAR TENDÊNCIAS
+# TMDB — TRENDING
 # ==========================================================
 async def _tmdb_trending_movies() -> list:
-    """Filmes em alta essa semana."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
@@ -124,7 +105,6 @@ async def _tmdb_trending_movies() -> list:
 
 
 async def _tmdb_trending_tv() -> list:
-    """Séries em alta essa semana."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
@@ -139,7 +119,6 @@ async def _tmdb_trending_tv() -> list:
 
 
 async def _tmdb_now_playing_movies() -> list:
-    """Filmes nos cinemas agora."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
@@ -154,7 +133,6 @@ async def _tmdb_now_playing_movies() -> list:
 
 
 async def _tmdb_on_the_air_tv() -> list:
-    """Séries que estão no ar agora."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
@@ -169,13 +147,12 @@ async def _tmdb_on_the_air_tv() -> list:
 
 
 # ==========================================================
-# HERO — TMDB primeiro, IPTV depois
+# HERO — TMDB first + Fanart fallback pra logo
 # ==========================================================
 async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
     if not TMDB_ENABLED:
         return []
 
-    # 1. Consulta TMDB em paralelo
     resultados_tmdb = await asyncio.gather(
         _tmdb_trending_movies(),
         _tmdb_trending_tv(),
@@ -184,12 +161,11 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
         return_exceptions=True,
     )
 
-    trending_movies  = resultados_tmdb[0] if isinstance(resultados_tmdb[0], list) else []
-    trending_tv      = resultados_tmdb[1] if isinstance(resultados_tmdb[1], list) else []
-    now_playing      = resultados_tmdb[2] if isinstance(resultados_tmdb[2], list) else []
-    on_the_air       = resultados_tmdb[3] if isinstance(resultados_tmdb[3], list) else []
+    trending_movies = resultados_tmdb[0] if isinstance(resultados_tmdb[0], list) else []
+    trending_tv     = resultados_tmdb[1] if isinstance(resultados_tmdb[1], list) else []
+    now_playing     = resultados_tmdb[2] if isinstance(resultados_tmdb[2], list) else []
+    on_the_air      = resultados_tmdb[3] if isinstance(resultados_tmdb[3], list) else []
 
-    # 2. Junta tudo, removendo duplicatas por tmdb_id
     vistos = set()
     candidatos = []
 
@@ -210,13 +186,11 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 candidatos.append({"tipo": "serie", "titulo": titulo, "tmdb": item})
 
     if not candidatos:
-        print("[i] Hero: nada encontrado no TMDB trending")
+        print("[i] Hero: nada no TMDB trending")
         return []
 
-    # 3. Monta índice rápido da lista IPTV
     indice = _construir_indice_rapido(filmes, series)
 
-    # 4. Filtra: só os que existem na IPTV
     encontrados = []
     for c in candidatos:
         match = _procurar_no_indice(indice, c["titulo"], c["tipo"])
@@ -233,14 +207,13 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
 
     print(f"[✓] Hero: {len(encontrados)} matches TMDB × IPTV")
 
-    # 5. Se tiver mais que n, escolhe semanalmente
     if len(encontrados) > n:
         randomizados = _shuffle_semanal(encontrados, "hero")
         selecionados = randomizados[:n]
     else:
         selecionados = encontrados
 
-    # 6. Enriquecer com TMDB completo (banner, logo, sinopse)
+    # Enriquecer com TMDB completo + Fanart fallback pra logo
     async def _enriquecer(m):
         item = m["item_iptv"]
         tipo = m["tipo"]
@@ -253,9 +226,30 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
             if not dados:
                 return None
 
-            # Verifica se tem pelo menos banner + sinopse
-            if not dados.get("banner") or not dados.get("sinopse"):
-                return None
+            # ==========================================================
+            # LOGO: TMDB primeiro, Fanart como fallback (igual ao /info)
+            # ==========================================================
+            logo_final = dados.get("logo")
+            logo_fonte = "tmdb" if logo_final else None
+
+            if not logo_final and dados.get("tmdb_id"):
+                try:
+                    if tipo == "serie":
+                        logo_fanart = await logos.buscar_logo_fanart_tv(
+                            dados.get("tvdb_id")
+                        )
+                    else:
+                        logo_fanart = await logos.buscar_logo_fanart_movie(
+                            dados.get("tmdb_id")
+                        )
+                    if logo_fanart:
+                        logo_final = logo_fanart
+                        logo_fonte = "fanart"
+                except Exception as e:
+                    print(f"[!] Fanart falhou pra {item.get('titulo')}: {e}")
+
+            # Banner: prioriza textless que veio do tmdb.py
+            banner = dados.get("banner_4k") or dados.get("banner")
 
             slug_base = _slugify(item.get("titulo") or "", item.get("ano"))
             base = (PUBLIC_BASE_URL or "").rstrip("/")
@@ -267,9 +261,10 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 "id": item.get("id"),
                 "tipo": tipo,
                 "titulo": item.get("titulo"),
-                "banner": dados.get("banner_4k") or dados.get("banner"),
+                "banner": banner or item.get("capa"),
                 "capa": dados.get("capa") or item.get("capa"),
-                "logo": dados.get("logo"),
+                "logo": logo_final,
+                "logo_fonte": logo_fonte,
                 "sinopse": dados.get("sinopse"),
                 "score": dados.get("score"),
                 "classificacao": dados.get("classificacao"),
@@ -285,12 +280,13 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
     resultados = await asyncio.gather(*[_enriquecer(m) for m in selecionados])
     hero_final = [r for r in resultados if r]
 
-    print(f"[✓] Hero final: {len(hero_final)} slides")
+    com_logo = sum(1 for h in hero_final if h.get("logo"))
+    print(f"[✓] Hero final: {len(hero_final)} slides ({com_logo} com logo)")
     return hero_final
 
 
 # ==========================================================
-# CARD SIMPLES (coleções) — SEM classificação
+# CARD SIMPLES
 # ==========================================================
 def _card_simples(item: dict, tipo: str | None = None) -> dict:
     return {
