@@ -117,6 +117,13 @@ def _img(path: str, size: str = "w500"):
     return f"{TMDB_IMG}/{size}{path}"
 
 
+def _img_perfil(path: str, size: str = "w185"):
+    """Foto de ator/diretor."""
+    if not path:
+        return None
+    return f"{TMDB_IMG}/{size}{path}"
+
+
 def _melhor_logo(logos: list, lang: str = "pt"):
     if not logos:
         return None
@@ -127,62 +134,32 @@ def _melhor_logo(logos: list, lang: str = "pt"):
     return logos[0].get("file_path")
 
 
-# ==========================================================
-# BACKDROP — prioriza textless (sem texto embutido)
-# ==========================================================
 def _melhor_backdrop(backdrops: list, lang: str = "pt"):
-    """
-    Escolhe o melhor backdrop (imagem de fundo 16:9) para o hero.
-
-    IMPORTANTE: o hero sobrepõe a LOGO do filme em cima do backdrop.
-    Se usarmos um backdrop COM TEXTO, o título do filme fica duplicado
-    (uma vez na imagem, outra vez na logo).
-
-    Por isso a ordem de prioridade é:
-      1. Textless (iso_639_1 == None) com resolução >= 1280px
-      2. Qualquer textless (mesmo pequeno)
-      3. Backdrop no idioma preferido (mesmo com texto)
-      4. O maior disponível (qualquer idioma)
-    """
+    """Prioriza backdrop SEM TEXTO (textless) pro hero."""
     if not backdrops:
         return None
 
-    # 1. Textless + boa resolução
     limpos_grandes = [
         bd for bd in backdrops
-        if bd.get("iso_639_1") is None
-        and (bd.get("width") or 0) >= 1280
+        if bd.get("iso_639_1") is None and (bd.get("width") or 0) >= 1280
     ]
     if limpos_grandes:
-        melhor = max(
-            limpos_grandes,
-            key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
-        )
-        print(f"[TMDB] backdrop textless {melhor.get('width')}x{melhor.get('height')}")
+        melhor = max(limpos_grandes,
+                     key=lambda x: (x.get("width") or 0) * (x.get("height") or 0))
         return melhor.get("file_path")
 
-    # 2. Qualquer textless
     limpos = [bd for bd in backdrops if bd.get("iso_639_1") is None]
     if limpos:
-        melhor = max(
-            limpos,
-            key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
-        )
-        print(f"[TMDB] backdrop textless (resolução menor)")
+        melhor = max(limpos,
+                     key=lambda x: (x.get("width") or 0) * (x.get("height") or 0))
         return melhor.get("file_path")
 
-    # 3. Idioma preferido
     for bd in backdrops:
         if bd.get("iso_639_1") == lang:
-            print(f"[TMDB] backdrop em {lang} (COM texto embutido)")
             return bd.get("file_path")
 
-    # 4. O maior disponível
-    maior = max(
-        backdrops,
-        key=lambda x: (x.get("width") or 0) * (x.get("height") or 0)
-    )
-    print(f"[TMDB] backdrop fallback (maior disponível)")
+    maior = max(backdrops,
+                key=lambda x: (x.get("width") or 0) * (x.get("height") or 0))
     return maior.get("file_path")
 
 
@@ -206,7 +183,7 @@ def _melhor_trailer(videos: list):
 
 
 # ==========================================================
-# CLASSIFICAÇÃO — tenta BR → PT → US → ES → qualquer
+# CLASSIFICAÇÃO
 # ==========================================================
 _PAISES_PREFERIDOS_MOVIE = ["BR", "PT", "US", "ES", "AR", "MX", "GB", "FR", "DE", "IT"]
 
@@ -265,20 +242,94 @@ def _classificacao_tv(content_ratings: dict):
 
 
 # ==========================================================
-# BUSCA POR ID — SEM CACHE
+# CREDITS — ELENCO E DIRETORES
+# ==========================================================
+def _extrair_elenco_movie(credits: dict, limite: int = 20) -> list:
+    """Extrai elenco de filme com fotos. Ordena por `order` do TMDB."""
+    cast = (credits or {}).get("cast") or []
+    cast_ordenado = sorted(cast, key=lambda x: x.get("order", 999))
+
+    resultado = []
+    for pessoa in cast_ordenado[:limite]:
+        resultado.append({
+            "id": pessoa.get("id"),
+            "nome": pessoa.get("name"),
+            "personagem": pessoa.get("character"),
+            "foto": _img_perfil(pessoa.get("profile_path"), "w185"),
+            "foto_grande": _img_perfil(pessoa.get("profile_path"), "h632"),
+        })
+    return resultado
+
+
+def _extrair_diretores_movie(credits: dict, limite: int = 3) -> list:
+    """Extrai diretores do filme (job == Director)."""
+    crew = (credits or {}).get("crew") or []
+    diretores = [c for c in crew if (c.get("job") or "").lower() == "director"]
+
+    resultado = []
+    for pessoa in diretores[:limite]:
+        resultado.append({
+            "id": pessoa.get("id"),
+            "nome": pessoa.get("name"),
+            "foto": _img_perfil(pessoa.get("profile_path"), "w185"),
+            "foto_grande": _img_perfil(pessoa.get("profile_path"), "h632"),
+        })
+    return resultado
+
+
+def _extrair_elenco_serie(credits: dict, limite: int = 20) -> list:
+    """Extrai elenco de série (aggregate_credits). Roles é uma lista."""
+    cast = (credits or {}).get("cast") or []
+    cast_ordenado = sorted(cast, key=lambda x: x.get("order", 999))
+
+    resultado = []
+    for pessoa in cast_ordenado[:limite]:
+        roles = pessoa.get("roles") or []
+        personagem = None
+        if roles:
+            # Pega o primeiro personagem (geralmente é o principal)
+            personagem = roles[0].get("character")
+
+        resultado.append({
+            "id": pessoa.get("id"),
+            "nome": pessoa.get("name"),
+            "personagem": personagem,
+            "foto": _img_perfil(pessoa.get("profile_path"), "w185"),
+            "foto_grande": _img_perfil(pessoa.get("profile_path"), "h632"),
+        })
+    return resultado
+
+
+def _extrair_criadores_serie(created_by: list, limite: int = 3) -> list:
+    """Extrai criadores da série (campo created_by do /tv/{id})."""
+    if not created_by:
+        return []
+    resultado = []
+    for pessoa in created_by[:limite]:
+        resultado.append({
+            "id": pessoa.get("id"),
+            "nome": pessoa.get("name"),
+            "foto": _img_perfil(pessoa.get("profile_path"), "w185"),
+            "foto_grande": _img_perfil(pessoa.get("profile_path"), "h632"),
+        })
+    return resultado
+
+
+# ==========================================================
+# BUSCA POR ID — FILME
 # ==========================================================
 async def buscar_filme_por_tmdb_id(tmdb_id: int):
     if not TMDB_ENABLED or not tmdb_id:
         return None
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=25) as client:
         try:
             r = await client.get(
                 f"{TMDB_BASE}/movie/{tmdb_id}",
                 params={
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
-                    "append_to_response": "images,videos,release_dates,external_ids",
+                    "append_to_response": "images,videos,release_dates,external_ids,credits",
                     "include_image_language": f"null,{TMDB_LANGUAGE[:2]},en",
                 },
                 headers={"User-Agent": USER_AGENT},
@@ -293,11 +344,20 @@ async def buscar_filme_por_tmdb_id(tmdb_id: int):
     videos = (full.get("videos") or {}).get("results") or []
     release = full.get("release_date", "")
     external = full.get("external_ids") or {}
+    credits = full.get("credits") or {}
 
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
     trailer = _melhor_trailer(videos)
     cert = _classificacao_movie(full.get("release_dates") or {})
+
+    # ===== ELENCO E DIRETORES COM FOTOS =====
+    elenco = _extrair_elenco_movie(credits, limite=20)
+    diretores = _extrair_diretores_movie(credits, limite=3)
+
+    # Strings de compatibilidade (backup)
+    elenco_texto = ", ".join([p["nome"] for p in elenco[:8]]) if elenco else None
+    diretor_texto = ", ".join([p["nome"] for p in diretores]) if diretores else None
 
     return {
         "tmdb_id": tmdb_id,
@@ -324,21 +384,30 @@ async def buscar_filme_por_tmdb_id(tmdb_id: int):
         "generos": [g.get("name") for g in (full.get("genres") or [])],
         "popularidade": full.get("popularity"),
         "recente": _is_recent(release),
+
+        # ===== NOVOS CAMPOS — ELENCO E DIRETORES COM FOTO =====
+        "elenco": elenco,                    # array de {id, nome, personagem, foto, foto_grande}
+        "diretores": diretores,              # array de {id, nome, foto, foto_grande}
+        "elenco_texto": elenco_texto,        # compatibilidade (string)
+        "diretor_texto": diretor_texto,      # compatibilidade (string)
     }
 
 
+# ==========================================================
+# BUSCA POR ID — SÉRIE
+# ==========================================================
 async def buscar_serie_por_tmdb_id(tmdb_id: int):
     if not TMDB_ENABLED or not tmdb_id:
         return None
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=25) as client:
         try:
             r = await client.get(
                 f"{TMDB_BASE}/tv/{tmdb_id}",
                 params={
                     "api_key": TMDB_API_KEY,
                     "language": TMDB_LANGUAGE,
-                    "append_to_response": "images,videos,content_ratings,external_ids",
+                    "append_to_response": "images,videos,content_ratings,external_ids,aggregate_credits",
                     "include_image_language": f"null,{TMDB_LANGUAGE[:2]},en",
                 },
                 headers={"User-Agent": USER_AGENT},
@@ -353,11 +422,20 @@ async def buscar_serie_por_tmdb_id(tmdb_id: int):
     videos = (full.get("videos") or {}).get("results") or []
     release = full.get("first_air_date", "")
     external = full.get("external_ids") or {}
+    credits = full.get("aggregate_credits") or {}
+    created_by = full.get("created_by") or []
 
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
     trailer = _melhor_trailer(videos)
-    cert = _classificacao_tv(full.get("content_ratings") or {})
+    cert = _classificacao_br_tv(full.get("content_ratings") or {}) if "_classificacao_br_tv" in dir() else _classificacao_tv(full.get("content_ratings") or {})
+
+    # ===== ELENCO E CRIADORES COM FOTOS =====
+    elenco = _extrair_elenco_serie(credits, limite=20)
+    criadores = _extrair_criadores_serie(created_by, limite=3)
+
+    elenco_texto = ", ".join([p["nome"] for p in elenco[:8]]) if elenco else None
+    diretor_texto = ", ".join([p["nome"] for p in criadores]) if criadores else None
 
     return {
         "tmdb_id": tmdb_id,
@@ -386,11 +464,18 @@ async def buscar_serie_por_tmdb_id(tmdb_id: int):
         "total_episodios": full.get("number_of_episodes"),
         "popularidade": full.get("popularity"),
         "recente": _is_recent(release),
+
+        # ===== NOVOS CAMPOS =====
+        "elenco": elenco,                    # array com fotos
+        "criadores": criadores,              # array com fotos (séries usam "criadores" em vez de "diretores")
+        "diretores": criadores,              # alias, para compatibilidade com app
+        "elenco_texto": elenco_texto,        # compatibilidade
+        "diretor_texto": diretor_texto,      # compatibilidade
     }
 
 
 # ==========================================================
-# BUSCA POR TÍTULO — SEM CACHE
+# BUSCA POR TÍTULO
 # ==========================================================
 async def buscar_filme(titulo: str, ano=None):
     if not TMDB_ENABLED or not titulo:

@@ -98,7 +98,7 @@ async def _buscar_tmdb_filme(info: dict, titulo: str):
             print(f"[TMDB] Filme por ID: {tmdb_id_int}")
             dados = await tmdb.buscar_filme_por_tmdb_id(tmdb_id_int)
             if dados:
-                print(f"[TMDB] ✅ Achou por ID")
+                print(f"[TMDB] Achou por ID")
                 return dados
         except Exception:
             pass
@@ -114,15 +114,15 @@ async def _buscar_tmdb_filme(info: dict, titulo: str):
     print(f"[TMDB] Filme por título: '{titulo_limpo}' ({ano})")
     dados = await tmdb.buscar_filme(titulo_limpo, ano)
     if dados:
-        print(f"[TMDB] ✅ Achou por título + ano")
+        print(f"[TMDB] Achou por título + ano")
         return dados
 
     dados = await tmdb.buscar_filme(titulo_limpo, None)
     if dados:
-        print(f"[TMDB] ✅ Achou sem ano")
+        print(f"[TMDB] Achou sem ano")
         return dados
 
-    print(f"[TMDB] ❌ Nada encontrado")
+    print(f"[TMDB] Nada encontrado")
     return None
 
 
@@ -134,7 +134,7 @@ async def _buscar_tmdb_serie(info: dict, titulo: str):
             print(f"[TMDB] Série por ID: {tmdb_id_int}")
             dados = await tmdb.buscar_serie_por_tmdb_id(tmdb_id_int)
             if dados:
-                print(f"[TMDB] ✅ Achou por ID")
+                print(f"[TMDB] Achou por ID")
                 return dados
         except Exception:
             pass
@@ -150,20 +150,20 @@ async def _buscar_tmdb_serie(info: dict, titulo: str):
     print(f"[TMDB] Série por título: '{titulo_limpo}' ({ano})")
     dados = await tmdb.buscar_serie(titulo_limpo, ano)
     if dados:
-        print(f"[TMDB] ✅ Achou por título + ano")
+        print(f"[TMDB] Achou por título + ano")
         return dados
 
     dados = await tmdb.buscar_serie(titulo_limpo, None)
     if dados:
-        print(f"[TMDB] ✅ Achou sem ano")
+        print(f"[TMDB] Achou sem ano")
         return dados
 
-    print(f"[TMDB] ❌ Nada encontrado")
+    print(f"[TMDB] Nada encontrado")
     return None
 
 
 # ==========================================================
-# FILME — SEM CACHE
+# FILME
 # ==========================================================
 async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
     url = INFO_MOVIE_URL.format(id=item_id)
@@ -188,6 +188,10 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
 
     trailer = _safe(info, "youtube_trailer", "trailer")
 
+    # Elenco e diretor vindos do Xtream (texto plano, apenas fallback)
+    elenco_xtream = _safe(info, "cast", "actors")
+    diretor_xtream = _safe(info, "director")
+
     payload = {
         "id": item_id,
         "tipo": "filme",
@@ -208,8 +212,6 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         "sinopse": _safe(info, "plot", "description"),
         "generos": [],
         "genero": _safe(info, "genre"),
-        "elenco": _safe(info, "cast", "actors"),
-        "diretor": _safe(info, "director"),
         "pais": _safe(info, "country"),
         "trailer": trailer,
         "trailer_url": f"https://www.youtube.com/watch?v={trailer}" if trailer else None,
@@ -221,6 +223,12 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         "tmdb_id": _to_int(_safe(info, "tmdb_id")),
         "tmdb_recente": False,
         "campos_preenchidos_por_tmdb": [],
+
+        # Elenco/diretor com fotos (será sobrescrito pelo TMDB se disponível)
+        "elenco": [],
+        "diretores": [],
+        "elenco_texto": elenco_xtream,
+        "diretor_texto": diretor_xtream,
     }
 
     if not TMDB_ENABLED:
@@ -258,6 +266,21 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         if dados_tmdb.get("tagline"):
             payload["tagline"] = dados_tmdb["tagline"]
             preenchidos.append("tagline")
+        if dados_tmdb.get("pais"):
+            payload["pais"] = dados_tmdb["pais"]
+
+        # ===== ELENCO E DIRETORES COM FOTOS =====
+        if dados_tmdb.get("elenco"):
+            payload["elenco"] = dados_tmdb["elenco"]
+            preenchidos.append("elenco")
+        if dados_tmdb.get("diretores"):
+            payload["diretores"] = dados_tmdb["diretores"]
+            preenchidos.append("diretores")
+
+        if dados_tmdb.get("elenco_texto"):
+            payload["elenco_texto"] = dados_tmdb["elenco_texto"]
+        if dados_tmdb.get("diretor_texto"):
+            payload["diretor_texto"] = dados_tmdb["diretor_texto"]
 
         payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
         payload["tmdb_recente"] = dados_tmdb.get("recente", False)
@@ -285,7 +308,7 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
 
 
 # ==========================================================
-# SÉRIE — SEM CACHE
+# SÉRIE
 # ==========================================================
 async def fetch_series_info(item_id: str, force: bool = False) -> dict:
     url = INFO_SERIES_URL.format(id=item_id)
@@ -309,6 +332,9 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         banner = banner[0]
 
     trailer = _safe(info, "youtube_trailer", "trailer")
+
+    elenco_xtream = _safe(info, "cast", "actors")
+    diretor_xtream = _safe(info, "director")
 
     eps_normalizados = []
     if isinstance(episodes_map, dict):
@@ -367,8 +393,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         "sinopse": _safe(info, "plot", "description"),
         "generos": [],
         "genero": _safe(info, "genre"),
-        "elenco": _safe(info, "cast", "actors"),
-        "diretor": _safe(info, "director"),
         "pais": _safe(info, "country"),
         "trailer": trailer,
         "trailer_url": f"https://www.youtube.com/watch?v={trailer}" if trailer else None,
@@ -389,6 +413,13 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         "tmdb_id": _to_int(_safe(info, "tmdb_id")),
         "tmdb_recente": False,
         "campos_preenchidos_por_tmdb": [],
+
+        # Elenco/criadores com fotos
+        "elenco": [],
+        "diretores": [],
+        "criadores": [],
+        "elenco_texto": elenco_xtream,
+        "diretor_texto": diretor_xtream,
     }
 
     if not TMDB_ENABLED:
@@ -426,6 +457,20 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         if dados_tmdb.get("tagline"):
             payload["tagline"] = dados_tmdb["tagline"]
             preenchidos.append("tagline")
+
+        # ===== ELENCO E CRIADORES COM FOTOS =====
+        if dados_tmdb.get("elenco"):
+            payload["elenco"] = dados_tmdb["elenco"]
+            preenchidos.append("elenco")
+        if dados_tmdb.get("criadores"):
+            payload["criadores"] = dados_tmdb["criadores"]
+            payload["diretores"] = dados_tmdb["criadores"]
+            preenchidos.append("criadores")
+
+        if dados_tmdb.get("elenco_texto"):
+            payload["elenco_texto"] = dados_tmdb["elenco_texto"]
+        if dados_tmdb.get("diretor_texto"):
+            payload["diretor_texto"] = dados_tmdb["diretor_texto"]
 
         payload["tmdb_id"] = dados_tmdb.get("tmdb_id")
         payload["tmdb_recente"] = dados_tmdb.get("recente", False)
