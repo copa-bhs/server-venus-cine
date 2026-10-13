@@ -12,6 +12,7 @@ from config import (
 )
 import tmdb
 import logos
+import proxy
 
 BASE_API = f"{IPTV_HOST}/player_api.php"
 USERNAME = IPTV_USERNAME
@@ -233,6 +234,9 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         "diretor_texto": diretor_xtream,
     }
 
+    # Registra no proxy para poder reproduzir
+    proxy.register_item(item_id, url_stream_xtream, titulo, "filme")
+
     if not TMDB_ENABLED:
         return payload
 
@@ -355,6 +359,10 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
                 if not url_xtream and ep_id:
                     ext = _safe(ep, "container_extension", default="mp4")
                     url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{ep_id}.{ext}"
+
+                # Registra o episódio no proxy
+                if ep_id:
+                    proxy.register_item(str(ep_id), url_xtream, titulo_limpo, "serie")
 
                 eps_normalizados.append({
                     "id": str(ep_id) if ep_id else None,

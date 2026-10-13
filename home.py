@@ -2,30 +2,33 @@ import time
 import random
 import asyncio
 import re
+import json
 import unicodedata
 from datetime import datetime
 
 import httpx
 
-from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, USER_AGENT, PUBLIC_BASE_URL
+from config import (
+    TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, USER_AGENT,
+    PUBLIC_BASE_URL, CACHE_DIR,
+)
 import tmdb
 import logos
 
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
+# Cache do hero em disco (7 dias)
+HERO_CACHE_FILE = CACHE_DIR / "hero_cache.json"
+HERO_TTL = 7 * 24 * 60 * 60  # 7 dias em segundos
 
+
+# ==========================================================
+# HELPERS
+# ==========================================================
 def _semana_atual() -> int:
     iso = datetime.now().isocalendar()
     return iso.year * 100 + iso.week
-
-
-def _shuffle_semanal(items: list, salt: str = "") -> list:
-    seed = _semana_atual() * 7919 + abs(hash(salt)) % 9973
-    rnd = random.Random(seed)
-    copia = list(items)
-    rnd.shuffle(copia)
-    return copia
 
 
 def _normalizar(texto: str) -> str:
@@ -40,28 +43,19 @@ def _normalizar(texto: str) -> str:
 
 
 def _normalizar_titulo(titulo: str) -> str:
-    """Remove acentos, pontuação e sufixos de qualidade pra comparar."""
     if not titulo:
         return ""
     t = unicodedata.normalize("NFKD", titulo)
     t = t.encode("ascii", "ignore").decode("ascii")
     t = t.lower()
-    # Remove sufixos de qualidade/idioma
     t = re.sub(r'\b(4k|uhd|fhd|hd|sd|cam|dublado|legendado|dub|leg)\b', '', t)
-    # Remove ano entre parênteses
     t = re.sub(r'\(?\b(19|20)\d{2}\b\)?', '', t)
-    # Remove pontuação e símbolos
     t = re.sub(r'[^a-z0-9\s]', '', t)
-    # Remove espaços duplos
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
 
 def _deduplicar(itens: list) -> list:
-    """
-    Remove duplicatas por título normalizado.
-    Mantém o primeiro (que geralmente é o de melhor qualidade).
-    """
     vistos = set()
     resultado = []
     for item in itens:
@@ -92,7 +86,50 @@ def _slugify(texto: str, ano=None) -> str:
 
 
 # ==========================================================
-# ÍNDICE RÁPIDO DA LISTA IPTV
+# CACHE DO HERO (7 dias)
+# ==========================================================
+def _hero_cache_ler() -> list | None:
+    if not HERO_CACHE_FILE.exists():
+        return None
+    try:
+        data = json.loads(HERO_CACHE_FILE.read_text(encoding="utf-8"))
+        ts = data.get("_ts", 0)
+        if time.time() - ts > HERO_TTL:
+            print("[HeroCache] Cache expirado (>7 dias)")
+            return None
+        hero = data.get("hero", [])
+        if not hero:
+            return None
+        dias = int((HERO_TTL - (time.time() - ts)) / 86400)
+        print(f"[HeroCache] Usando hero do cache ({dias} dias restantes)")
+        return hero
+    except Exception as e:
+        print(f"[HeroCache] Erro ao ler: {e}")
+        return None
+
+
+def _hero_cache_salvar(hero: list):
+    try:
+        HERO_CACHE_FILE.write_text(
+            json.dumps({"_ts": time.time(), "hero": hero}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"[HeroCache] Hero salvo em cache por 7 dias ({len(hero)} slides)")
+    except Exception as e:
+        print(f"[HeroCache] Erro ao salvar: {e}")
+
+
+def limpar_hero_cache():
+    try:
+        if HERO_CACHE_FILE.exists():
+            HERO_CACHE_FILE.unlink()
+            print("[HeroCache] Cache limpo")
+    except Exception:
+        pass
+
+
+# ==========================================================
+# ÍNDICE RÁPIDO
 # ==========================================================
 def _construir_indice_rapido(filmes: list, series: list) -> dict:
     indice = {"filmes": {}, "series": {}}
@@ -107,7 +144,7 @@ def _construir_indice_rapido(filmes: list, series: list) -> dict:
     return indice
 
 
-def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str) -> dict | None:
+def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str):
     t_norm = _normalizar(titulo_tmdb)
     if not t_norm:
         return None
@@ -124,46 +161,42 @@ def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str) -> dict | Non
 
 
 # ==========================================================
-# TMDB — TRENDING
+# TMDB — LANÇAMENTOS (não trending)
 # ==========================================================
-async def _tmdb_trending_movies() -> list:
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                f"{TMDB_BASE}/trending/movie/week",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
-                headers={"User-Agent": USER_AGENT},
-            )
-            r.raise_for_status()
-            return r.json().get("results", [])[:20]
-    except Exception:
-        return []
-
-
-async def _tmdb_trending_tv() -> list:
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                f"{TMDB_BASE}/trending/tv/week",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
-                headers={"User-Agent": USER_AGENT},
-            )
-            r.raise_for_status()
-            return r.json().get("results", [])[:20]
-    except Exception:
-        return []
-
-
 async def _tmdb_now_playing_movies() -> list:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/movie/now_playing",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "region": "BR"},
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "language": TMDB_LANGUAGE,
+                    "region": "BR",
+                    "page": 1,
+                },
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
-            return r.json().get("results", [])[:20]
+            return r.json().get("results", [])[:30]
+    except Exception:
+        return []
+
+
+async def _tmdb_upcoming_movies() -> list:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/movie/upcoming",
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "language": TMDB_LANGUAGE,
+                    "region": "BR",
+                    "page": 1,
+                },
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:30]
     except Exception:
         return []
 
@@ -173,56 +206,91 @@ async def _tmdb_on_the_air_tv() -> list:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/tv/on_the_air",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "language": TMDB_LANGUAGE,
+                    "page": 1,
+                },
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
-            return r.json().get("results", [])[:20]
+            return r.json().get("results", [])[:30]
+    except Exception:
+        return []
+
+
+async def _tmdb_airing_today_tv() -> list:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{TMDB_BASE}/tv/airing_today",
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "language": TMDB_LANGUAGE,
+                    "page": 1,
+                },
+                headers={"User-Agent": USER_AGENT},
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])[:30]
     except Exception:
         return []
 
 
 # ==========================================================
-# HERO — TMDB first + Fanart fallback pra logo
+# BUSCAR CANDIDATOS (lançamentos do TMDB)
 # ==========================================================
-async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
-    if not TMDB_ENABLED:
-        return []
-
-    resultados_tmdb = await asyncio.gather(
-        _tmdb_trending_movies(),
-        _tmdb_trending_tv(),
+async def _buscar_candidatos_lancamentos() -> list:
+    print("[Hero] Buscando lançamentos no TMDB...")
+    resultados = await asyncio.gather(
         _tmdb_now_playing_movies(),
+        _tmdb_upcoming_movies(),
         _tmdb_on_the_air_tv(),
+        _tmdb_airing_today_tv(),
         return_exceptions=True,
     )
 
-    trending_movies = resultados_tmdb[0] if isinstance(resultados_tmdb[0], list) else []
-    trending_tv     = resultados_tmdb[1] if isinstance(resultados_tmdb[1], list) else []
-    now_playing     = resultados_tmdb[2] if isinstance(resultados_tmdb[2], list) else []
-    on_the_air      = resultados_tmdb[3] if isinstance(resultados_tmdb[3], list) else []
+    now_playing = resultados[0] if isinstance(resultados[0], list) else []
+    upcoming = resultados[1] if isinstance(resultados[1], list) else []
+    on_the_air = resultados[2] if isinstance(resultados[2], list) else []
+    airing_today = resultados[3] if isinstance(resultados[3], list) else []
+
+    print(f"[Hero] TMDB: {len(now_playing)} em cartaz, "
+          f"{len(upcoming)} em breve, {len(on_the_air)} no ar, "
+          f"{len(airing_today)} hoje")
 
     vistos = set()
     candidatos = []
 
-    for item in now_playing + trending_movies:
+    for item in now_playing + upcoming:
         tid = item.get("id")
         if tid and tid not in vistos:
             vistos.add(tid)
             titulo = item.get("title") or item.get("name")
             if titulo:
-                candidatos.append({"tipo": "filme", "titulo": titulo, "tmdb": item})
+                candidatos.append({"tipo": "filme", "titulo": titulo})
 
-    for item in trending_tv + on_the_air:
+    for item in on_the_air + airing_today:
         tid = item.get("id")
         if tid and tid not in vistos:
             vistos.add(tid)
             titulo = item.get("name") or item.get("title")
             if titulo:
-                candidatos.append({"tipo": "serie", "titulo": titulo, "tmdb": item})
+                candidatos.append({"tipo": "serie", "titulo": titulo})
 
+    return candidatos
+
+
+# ==========================================================
+# MONTAR HERO (5 slides)
+# ==========================================================
+async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
+    if not TMDB_ENABLED:
+        return []
+
+    candidatos = await _buscar_candidatos_lancamentos()
     if not candidatos:
-        print("[i] Hero: nada no TMDB trending")
+        print("[Hero] Nenhum lançamento no TMDB")
         return []
 
     indice = _construir_indice_rapido(filmes, series)
@@ -233,21 +301,35 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
         if match:
             encontrados.append({
                 "item_iptv": match,
-                "tmdb_item": c["tmdb"],
+                "titulo_tmdb": c["titulo"],
                 "tipo": c["tipo"],
             })
 
+    print(f"[Hero] {len(encontrados)} lançamentos existem na lista IPTV")
+
     if not encontrados:
-        print("[i] Hero: nenhum item do TMDB está na lista IPTV")
+        print("[Hero] Nenhum lançamento do TMDB na IPTV. Usando fallback local...")
+        recentes = []
+        for f in filmes:
+            try:
+                if int(f.get("ano") or 0) >= 2020:
+                    recentes.append({"item_iptv": f, "titulo_tmdb": f.get("titulo"), "tipo": "filme"})
+            except: pass
+        for s in series:
+            try:
+                if int(s.get("ano") or 0) >= 2020:
+                    recentes.append({"item_iptv": s, "titulo_tmdb": s.get("titulo"), "tipo": "serie"})
+            except: pass
+        
+        # Ordena pelos mais recentes e pega os 20 primeiros
+        recentes.sort(key=lambda x: int(x["item_iptv"].get("ano") or 0), reverse=True)
+        encontrados = recentes[:20]
+
+    if not encontrados:
         return []
 
-    print(f"[✓] Hero: {len(encontrados)} matches TMDB × IPTV")
-
-    if len(encontrados) > n:
-        randomizados = _shuffle_semanal(encontrados, "hero")
-        selecionados = randomizados[:n]
-    else:
-        selecionados = encontrados
+    # Mantém ordem do TMDB (mais recentes primeiro) — sem shuffle
+    selecionados = encontrados[:n]
 
     async def _enriquecer(m):
         item = m["item_iptv"]
@@ -261,25 +343,21 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
             if not dados:
                 return None
 
-            # LOGO: TMDB primeiro, Fanart como fallback
+            # LOGO: TMDB → Fanart
             logo_final = dados.get("logo")
             logo_fonte = "tmdb" if logo_final else None
 
             if not logo_final and dados.get("tmdb_id"):
                 try:
                     if tipo == "serie":
-                        logo_fanart = await logos.buscar_logo_fanart_tv(
-                            dados.get("tvdb_id")
-                        )
+                        logo_fanart = await logos.buscar_logo_fanart_tv(dados.get("tvdb_id"))
                     else:
-                        logo_fanart = await logos.buscar_logo_fanart_movie(
-                            dados.get("tmdb_id")
-                        )
+                        logo_fanart = await logos.buscar_logo_fanart_movie(dados.get("tmdb_id"))
                     if logo_fanart:
                         logo_final = logo_fanart
                         logo_fonte = "fanart"
-                except Exception as e:
-                    print(f"[!] Fanart falhou pra {item.get('titulo')}: {e}")
+                except Exception:
+                    pass
 
             banner = dados.get("banner_4k") or dados.get("banner")
 
@@ -306,15 +384,36 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 "url_stream": url_stream,
             }
         except Exception as e:
-            print(f"[!] Hero enriquecimento falhou pra {item.get('titulo')}: {e}")
+            print(f"[!] Hero falhou pra {item.get('titulo')}: {e}")
             return None
 
     resultados = await asyncio.gather(*[_enriquecer(m) for m in selecionados])
     hero_final = [r for r in resultados if r]
 
-    com_logo = sum(1 for h in hero_final if h.get("logo"))
-    print(f"[✓] Hero final: {len(hero_final)} slides ({com_logo} com logo)")
+    print(f"[Hero] Hero final: {len(hero_final)} slides")
     return hero_final
+
+
+# ==========================================================
+# GET HERO (com cache de 7 dias)
+# ==========================================================
+async def get_hero(filmes: list, series: list, n: int = 5, force: bool = False) -> list:
+    """
+    Retorna o hero. Usa cache de 7 dias.
+    Se force=True, ignora o cache e monta de novo.
+    """
+    if not force:
+        cached = _hero_cache_ler()
+        if cached:
+            return cached
+
+    print("[Hero] Montando hero novo...")
+    hero = await _montar_hero_async(filmes, series, n)
+
+    if hero:
+        _hero_cache_salvar(hero)
+
+    return hero
 
 
 # ==========================================================
@@ -345,7 +444,6 @@ def _ano(item: dict):
 
 
 def _por_ano(itens: list, n: int = 15) -> list:
-    """Top N mais recentes, SEM duplicatas."""
     validos = [i for i in itens if _tem_capa(i) and _ano(i) > 0]
     validos.sort(key=_ano, reverse=True)
     validos = _deduplicar(validos)
@@ -366,7 +464,7 @@ def _por_categoria(itens: list, palavras: list, n: int = 15) -> list:
 
 
 # ==========================================================
-# 12 COLEÇÕES
+# COLEÇÕES
 # ==========================================================
 def _construir_colecoes(filmes: list, series: list) -> list:
     todos = filmes + series
@@ -403,13 +501,13 @@ def _construir_colecoes(filmes: list, series: list) -> list:
 
 
 # ==========================================================
-# BUILDER PRINCIPAL
+# BUILDER PRINCIPAL — aceita force_hero
 # ==========================================================
-async def build_home_async(index: dict) -> dict:
+async def build_home_async(index: dict, force_hero: bool = False) -> dict:
     filmes = index.get("filmes", [])
     series = index.get("series", [])
 
-    hero = await _montar_hero_async(filmes, series, 5)
+    hero = await get_hero(filmes, series, n=5, force=force_hero)
 
     return {
         "gerado_em": time.time(),

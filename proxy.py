@@ -176,6 +176,27 @@ def slug_for(item: dict, tipo: str | None = None) -> str:
 
 
 # ==========================================================
+# REGISTRO DINÂMICO (NOVO)
+# ==========================================================
+def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = None):
+    """Registra um item dinamicamente no mapa do proxy."""
+    global _ID_MAP, _SLUG_MAP
+    if not item_id or not url:
+        return
+    dados = {
+        "id": str(item_id),
+        "url": url,
+        "titulo": titulo,
+        "tipo": tipo,
+        "slug": slug or slugify(titulo)
+    }
+    _ID_MAP[str(item_id)] = dados
+    if slug:
+        _SLUG_MAP[slug] = dados
+    print(f"[Proxy] ID {item_id} registrado dinamicamente ({tipo})")
+
+
+# ==========================================================
 # STREAM PROXY
 # ==========================================================
 async def stream_proxy(url: str, request: Request) -> StreamingResponse:
