@@ -22,18 +22,28 @@ from proxy import (
 )
 import tmdb
 
-app = FastAPI(title="IPTV Organizer Pro", version="7.0.0")
+app = FastAPI(title="IPTV Organizer Pro", version="8.0.0")
 
+# ==========================================================
+# CORS — permite o frontend (Vercel) chamar a API
+# ==========================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Length",
+        "Content-Range",
+        "Accept-Ranges",
+    ],
+    max_age=3600,
 )
 
+
 # ==========================================================
-# ÍNDICES EM MEMÓRIA (3 listas separadas)
+# ÍNDICES EM MEMÓRIA
 # ==========================================================
 _FILMES: list = []
 _SERIES: list = []
@@ -114,7 +124,6 @@ async def fetch_and_rebuild(force: bool = False):
     print("[•] Atualizando catálogo via API Xtream...")
     t0 = time.time()
 
-    # Baixa os 3 em paralelo — cada um salva seu arquivo
     filmes, series, canais = await asyncio.gather(
         fetch_filmes(),
         fetch_series(),
@@ -213,12 +222,10 @@ async def auto_refresh_loop():
         print(f"\n[•] Auto-refresh disparado ({time.strftime('%H:%M:%S')})")
 
         try:
-            # Snapshots antigos
             filmes_ant = list(_FILMES)
             series_ant = list(_SERIES)
             canais_ant = list(_CANAIS)
 
-            # Baixa tudo de novo
             t0 = time.time()
             filmes, series, canais = await asyncio.gather(
                 fetch_filmes(),
@@ -231,10 +238,8 @@ async def auto_refresh_loop():
             _SERIES = series
             _CANAIS = canais
 
-            # Novidades
             novidades = await detectar_novidades(filmes_ant, series_ant, canais_ant)
 
-            # Salva tudo
             _save_all()
             META_FILE.write_text(json.dumps({"timestamp": time.time()}))
             _HOME_CACHE_TS = 0
@@ -314,10 +319,11 @@ async def shutdown():
 def root():
     return {
         "service": "IPTV Organizer Pro",
-        "version": "7.0.0",
+        "version": "8.0.0",
         "storage": "3 arquivos JSON (filmes / series / canais)",
         "tmdb": TMDB_ENABLED,
         "proxy": True,
+        "cors": "habilitado",
     }
 
 
@@ -331,11 +337,10 @@ async def home(force: bool = False):
         raise HTTPException(503, "Catálogo não carregado. Chame /refresh.")
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < _HOME_CACHE_TTL:
         return _HOME_CACHE
-    _HOME_CACHE = await build_home_async({
-        "filmes": _FILMES,
-        "series": _SERIES,
-        "stats": _stats(),
-    })
+    _HOME_CACHE = await build_home_async(
+        {"filmes": _FILMES, "series": _SERIES, "stats": _stats()},
+        force_hero=force,
+    )
     _HOME_CACHE_TS = time.time()
     return _HOME_CACHE
 
@@ -362,11 +367,6 @@ async def status():
         "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
         "tmdb_ativo": TMDB_ENABLED,
         "storage": "3 JSONs (filmes / series / canais)",
-        "arquivos": {
-            "filmes": str(FILMES_FILE.name),
-            "series": str(SERIES_FILE.name),
-            "canais": str(CANAIS_FILE.name),
-        },
         "public_base_url": PUBLIC_BASE_URL,
         "proxy": proxy_stats(),
         "stats": _stats(),
@@ -579,6 +579,9 @@ def proxy_monitor():
     return {"slugs_carregados": total_slugs(), **proxy_stats()}
 
 
+# ==========================================================
+# START
+# ==========================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False)

@@ -4,6 +4,7 @@ Proxy reverso de streaming para o provedor IPTV.
 - Suporta Range requests (seek em vídeo)
 - Limita streams simultâneos (global + por IP)
 - Streaming bidirecional chunk-a-chunk (não carrega vídeo em memória)
+- CORS explícito nos headers de resposta (para WebView/navegador)
 """
 import asyncio
 import json
@@ -162,7 +163,6 @@ def slug_for(item: dict, tipo: str | None = None) -> str:
     ano = item.get("ano")
     t = tipo or item.get("tipo") or ""
     if t == "serie":
-        # Precisa montar com base + temporada/episódio
         base = slugify(titulo)
         t_num = item.get("temporada")
         e_num = item.get("episodio")
@@ -186,18 +186,33 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
 
     client_ip = request.client.host if request.client else "unknown"
 
+    # Limite global
     if _active_total >= PROXY_MAX_CONCURRENT:
-        raise HTTPException(503, "Servidor no limite de streams. Tente novamente em alguns segundos.")
+        raise HTTPException(
+            503,
+            "Servidor no limite de streams. Tente novamente em alguns segundos."
+        )
 
+    # Limite por IP
     if _active_by_ip.get(client_ip, 0) >= PROXY_MAX_PER_IP:
-        raise HTTPException(429, f"Você atingiu o limite de {PROXY_MAX_PER_IP} streams simultâneos. Feche algum player e tente de novo.")
+        raise HTTPException(
+            429,
+            f"Você atingiu o limite de {PROXY_MAX_PER_IP} streams "
+            "simultâneos. Feche algum player e tente de novo."
+        )
 
+    # ==========================================================
+    # HEADERS REPASSADOS PARA O PROVEDOR
+    # ==========================================================
     headers = {"User-Agent": USER_AGENT}
     if "range" in request.headers:
         headers["Range"] = request.headers["range"]
     if "if-modified-since" in request.headers:
         headers["If-Modified-Since"] = request.headers["if-modified-since"]
 
+    # ==========================================================
+    # CLIENT HTTP DEDICADO POR STREAM
+    # ==========================================================
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(
             connect=PROXY_CONNECT_TIMEOUT,
@@ -227,9 +242,13 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
         await client.aclose()
         raise HTTPException(status, "Provedor recusou a requisição do stream.")
 
+    # Registra o stream ativo
     _active_total += 1
     _active_by_ip[client_ip] = _active_by_ip.get(client_ip, 0) + 1
 
+    # ==========================================================
+    # STREAMER (chunk-a-chunk, sem carregar em memória)
+    # ==========================================================
     async def _streamer():
         global _active_total
         try:
@@ -254,20 +273,40 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
             except Exception:
                 pass
 
+    # ==========================================================
+    # HEADERS DA RESPOSTA (repassados do upstream)
+    # ==========================================================
     resp_headers = {}
-    for h in ("content-type", "content-length", "content-range",
-              "accept-ranges", "last-modified", "etag"):
+    for h in (
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "last-modified",
+        "etag",
+    ):
         if h in upstream.headers:
             resp_headers[h] = upstream.headers[h]
 
+    # Garante Accept-Ranges: bytes (essencial pro player fazer seek)
     resp_headers.setdefault("accept-ranges", "bytes")
     resp_headers["cache-control"] = "no-store"
+
+    # ==========================================================
+    # CORS EXPLÍCITO (evita bloqueio em WebView/navegador)
+    # ==========================================================
+    resp_headers["Access-Control-Allow-Origin"] = "*"
+    resp_headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+    resp_headers["Access-Control-Allow-Headers"] = "Range, Content-Type, Origin"
+    resp_headers["Access-Control-Expose-Headers"] = (
+        "Content-Length, Content-Range, Accept-Ranges, Content-Type"
+    )
 
     media_type = upstream.headers.get("content-type", "video/mp4")
 
     return StreamingResponse(
         _streamer(),
-        status_code=upstream.status_code,
+        status_code=upstream.status_code,  # 200 ou 206 (Partial Content)
         headers=resp_headers,
         media_type=media_type,
     )
