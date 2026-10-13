@@ -8,6 +8,7 @@ from config import (
     IPTV_USERNAME,
     IPTV_PASSWORD,
     TMDB_ENABLED,
+    PUBLIC_BASE_URL,
 )
 import tmdb
 import logos
@@ -21,7 +22,29 @@ INFO_SERIES_URL = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=ge
 
 
 # ==========================================================
-# LIMPEZA DE TÍTULOS DE EPISÓDIO
+# URL DO PROXY (evita Mixed Content)
+# ==========================================================
+def _url_proxy(item_id: str) -> str:
+    """
+    Monta URL HTTPS do proxy reverso a partir do ID do Xtream.
+    O proxy /stream/id/{id} baixa HTTP do Xtream e serve HTTPS pro app.
+    """
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if base:
+        return f"{base}/stream/id/{item_id}.mp4"
+    return f"/stream/id/{item_id}.mp4"
+
+
+def _url_proxy_episodio(ep_id: str) -> str:
+    """URL do proxy pro episódio."""
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if base:
+        return f"{base}/stream/id/{ep_id}.mp4"
+    return f"/stream/id/{ep_id}.mp4"
+
+
+# ==========================================================
+# LIMPEZA DE TÍTULOS
 # ==========================================================
 _EPISODE_PATTERNS = [
     re.compile(r'\s*[-–—]\s*S\d+\s*[E\xD7x]\s*\d+.*$', re.I),
@@ -80,25 +103,13 @@ def _to_int(v):
         return None
 
 
-def _build_stream_url(kind: str, item_id: str) -> str:
-    return f"{IPTV_HOST}/{kind}/{USERNAME}/{PASSWORD}/{item_id}.mp4"
-
-
-def _build_episode_url(series_id: str, season, ep: dict) -> str:
-    episode = ep.get("episode_num")
-    ext = ep.get("container_extension", "mp4")
-    return f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{series_id}_{season}_{episode}.{ext}"
-
-
 async def _buscar_tmdb_filme(info: dict, titulo: str):
     tmdb_id = _safe(info, "tmdb_id")
     if tmdb_id:
         try:
             tmdb_id_int = int(tmdb_id)
-            print(f"[TMDB] Filme por ID: {tmdb_id_int}")
             dados = await tmdb.buscar_filme_por_tmdb_id(tmdb_id_int)
             if dados:
-                print(f"[TMDB] Achou por ID")
                 return dados
         except Exception:
             pass
@@ -111,18 +122,12 @@ async def _buscar_tmdb_filme(info: dict, titulo: str):
         except Exception:
             ano = None
 
-    print(f"[TMDB] Filme por título: '{titulo_limpo}' ({ano})")
     dados = await tmdb.buscar_filme(titulo_limpo, ano)
     if dados:
-        print(f"[TMDB] Achou por título + ano")
         return dados
-
     dados = await tmdb.buscar_filme(titulo_limpo, None)
     if dados:
-        print(f"[TMDB] Achou sem ano")
         return dados
-
-    print(f"[TMDB] Nada encontrado")
     return None
 
 
@@ -131,10 +136,8 @@ async def _buscar_tmdb_serie(info: dict, titulo: str):
     if tmdb_id:
         try:
             tmdb_id_int = int(tmdb_id)
-            print(f"[TMDB] Série por ID: {tmdb_id_int}")
             dados = await tmdb.buscar_serie_por_tmdb_id(tmdb_id_int)
             if dados:
-                print(f"[TMDB] Achou por ID")
                 return dados
         except Exception:
             pass
@@ -147,18 +150,12 @@ async def _buscar_tmdb_serie(info: dict, titulo: str):
         except Exception:
             ano = None
 
-    print(f"[TMDB] Série por título: '{titulo_limpo}' ({ano})")
     dados = await tmdb.buscar_serie(titulo_limpo, ano)
     if dados:
-        print(f"[TMDB] Achou por título + ano")
         return dados
-
     dados = await tmdb.buscar_serie(titulo_limpo, None)
     if dados:
-        print(f"[TMDB] Achou sem ano")
         return dados
-
-    print(f"[TMDB] Nada encontrado")
     return None
 
 
@@ -187,10 +184,11 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         banner = backdrop_list
 
     trailer = _safe(info, "youtube_trailer", "trailer")
-
-    # Elenco e diretor vindos do Xtream (texto plano, apenas fallback)
     elenco_xtream = _safe(info, "cast", "actors")
     diretor_xtream = _safe(info, "director")
+
+    # URL crua do Xtream (não usar direto — só pra debug)
+    url_stream_xtream = _safe(movie_data, "stream_url") or f"{IPTV_HOST}/movie/{USERNAME}/{PASSWORD}/{item_id}.mp4"
 
     payload = {
         "id": item_id,
@@ -218,13 +216,17 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         "trailer_nome": None,
         "classificacao": _safe(info, "mpaa_rating", "age"),
         "container": _safe(movie_data, "container_extension"),
-        "url_stream": _safe(movie_data, "stream_url") or _build_stream_url("movie", item_id),
+        # ============================================
+        # URLS DE STREAM
+        # ============================================
+        # url_stream: URL do PROXY HTTPS (usar essa no app)
+        "url_stream": _url_proxy(item_id),
+        # url_stream_direto: URL crua do Xtream (só pra debug)
+        "url_stream_direto": url_stream_xtream,
         "categoria": _safe(info, "category", "genre"),
         "tmdb_id": _to_int(_safe(info, "tmdb_id")),
         "tmdb_recente": False,
         "campos_preenchidos_por_tmdb": [],
-
-        # Elenco/diretor com fotos (será sobrescrito pelo TMDB se disponível)
         "elenco": [],
         "diretores": [],
         "elenco_texto": elenco_xtream,
@@ -266,17 +268,13 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         if dados_tmdb.get("tagline"):
             payload["tagline"] = dados_tmdb["tagline"]
             preenchidos.append("tagline")
-        if dados_tmdb.get("pais"):
-            payload["pais"] = dados_tmdb["pais"]
 
-        # ===== ELENCO E DIRETORES COM FOTOS =====
         if dados_tmdb.get("elenco"):
             payload["elenco"] = dados_tmdb["elenco"]
             preenchidos.append("elenco")
         if dados_tmdb.get("diretores"):
             payload["diretores"] = dados_tmdb["diretores"]
             preenchidos.append("diretores")
-
         if dados_tmdb.get("elenco_texto"):
             payload["elenco_texto"] = dados_tmdb["elenco_texto"]
         if dados_tmdb.get("diretor_texto"):
@@ -332,7 +330,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         banner = banner[0]
 
     trailer = _safe(info, "youtube_trailer", "trailer")
-
     elenco_xtream = _safe(info, "cast", "actors")
     diretor_xtream = _safe(info, "director")
 
@@ -353,12 +350,11 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
                 if not titulo_limpo:
                     titulo_limpo = f"Episódio {ep_num}" if ep_num else "Episódio"
 
-                url_stream = _safe(ep, "stream_url")
-                if not url_stream:
-                    try:
-                        url_stream = _build_episode_url(item_id, season_num, ep)
-                    except Exception:
-                        url_stream = None
+                # URL crua do Xtream (para debug)
+                url_xtream = _safe(ep, "stream_url")
+                if not url_xtream and ep_id:
+                    ext = _safe(ep, "container_extension", default="mp4")
+                    url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{ep_id}.{ext}"
 
                 eps_normalizados.append({
                     "id": str(ep_id) if ep_id else None,
@@ -369,7 +365,13 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
                     "capa": _safe(ep_info, "movie_image"),
                     "duracao": _safe(ep_info, "duration"),
                     "score": _safe(ep_info, "rating"),
-                    "url_stream": url_stream,
+                    # ============================================
+                    # URLS DE STREAM DO EPISÓDIO
+                    # ============================================
+                    # url_stream: URL do PROXY HTTPS (usar essa no app)
+                    "url_stream": _url_proxy_episodio(str(ep_id)) if ep_id else None,
+                    # url_stream_direto: URL crua do Xtream (só pra debug)
+                    "url_stream_direto": url_xtream,
                 })
 
     eps_normalizados.sort(key=lambda e: (e["temporada"] or 0, e["episodio"] or 0))
@@ -413,8 +415,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         "tmdb_id": _to_int(_safe(info, "tmdb_id")),
         "tmdb_recente": False,
         "campos_preenchidos_por_tmdb": [],
-
-        # Elenco/criadores com fotos
         "elenco": [],
         "diretores": [],
         "criadores": [],
@@ -458,7 +458,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
             payload["tagline"] = dados_tmdb["tagline"]
             preenchidos.append("tagline")
 
-        # ===== ELENCO E CRIADORES COM FOTOS =====
         if dados_tmdb.get("elenco"):
             payload["elenco"] = dados_tmdb["elenco"]
             preenchidos.append("elenco")
@@ -466,7 +465,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
             payload["criadores"] = dados_tmdb["criadores"]
             payload["diretores"] = dados_tmdb["criadores"]
             preenchidos.append("criadores")
-
         if dados_tmdb.get("elenco_texto"):
             payload["elenco_texto"] = dados_tmdb["elenco_texto"]
         if dados_tmdb.get("diretor_texto"):
