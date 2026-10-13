@@ -22,7 +22,7 @@ from proxy import (
 )
 import tmdb
 
-app = FastAPI(title="IPTV Organizer Pro", version="8.0.0")
+app = FastAPI(title="IPTV Organizer Pro", version="8.0.1")
 
 # ==========================================================
 # CORS — permite o frontend (Vercel) chamar a API
@@ -319,7 +319,7 @@ async def shutdown():
 def root():
     return {
         "service": "IPTV Organizer Pro",
-        "version": "8.0.0",
+        "version": "8.0.1",
         "storage": "3 arquivos JSON (filmes / series / canais)",
         "tmdb": TMDB_ENABLED,
         "proxy": True,
@@ -548,18 +548,9 @@ async def info_serie(serie_id: str, force: bool = False):
 # ==========================================================
 # PROXY DE STREAM
 # ==========================================================
-@app.get("/stream/{slug_path:path}")
-async def proxy_por_slug(slug_path: str, request: Request):
-    slug = slug_path
-    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
-        if slug.lower().endswith(ext):
-            slug = slug[:-len(ext)]
-            break
-    item = get_by_slug(slug)
-    if not item:
-        raise HTTPException(404, "Slug não encontrado.")
-    return await stream_proxy(item["url"], request)
-
+# ⚠️ ORDEM IMPORTA! A rota /stream/id/ precisa vir ANTES de
+# /stream/{slug_path:path}, senão o catch-all engole tudo e
+# o handler de ID nunca é chamado.
 
 @app.get("/stream/id/{item_id}")
 async def proxy_por_id(item_id: str, request: Request):
@@ -571,6 +562,19 @@ async def proxy_por_id(item_id: str, request: Request):
     item = get_by_id(clean_id)
     if not item:
         raise HTTPException(404, "ID não encontrado.")
+    return await stream_proxy(item["url"], request)
+
+
+@app.get("/stream/{slug_path:path}")
+async def proxy_por_slug(slug_path: str, request: Request):
+    slug = slug_path
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
+        if slug.lower().endswith(ext):
+            slug = slug[:-len(ext)]
+            break
+    item = get_by_slug(slug)
+    if not item:
+        raise HTTPException(404, "Slug não encontrado.")
     return await stream_proxy(item["url"], request)
 
 
