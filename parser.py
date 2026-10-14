@@ -12,29 +12,103 @@ PASSWORD = IPTV_PASSWORD
 EPISODE_RE = re.compile(r'\s*S\d+\s*[E\xD7x]\s*\d+.*$', re.I)
 YEAR_RE = re.compile(r'\b(19\d{2}|20\d{2})\b')
 
+# Tags técnicas que devem ser removidas dos títulos
+_TAGS_TECNICAS = re.compile(
+    r'\b('
+    r'4k|uhd|fhd|hd|sd|cam|ts|hdcam|web[\s\-]?dl|webrip|bluray|brrip|bdrip|'
+    r'dvdrip|hdrip|hdtv|hdr|dv|sdr|remux|proper|repack|'
+    r'x264|x265|h264|h265|hevc|avc|'
+    r'aac|ac3|eac3|ddp?5[\s\.]?1|5[\s\.]?1|7[\s\.]?1|atmos|'
+    r'dual[\s\-]?[aá]udio|dual|dublado|legendado|dublagem|legend|'
+    r'dub|leg|nacional|original|'
+    r'1080p?|720p?|480p?|360p?|2160p?|1440p?|2k|8k|'
+    r'extended|director[\'s]*[\s]*cut|unrated|imax|theatrical|'
+    r'fullhd|full[\s\-]?hd|'
+    r'br|tv|online|'
+    r'h\.264|h\.265'
+    r')\b',
+    re.I,
+)
+
+# Palavras que indicam prefixo de tipo (remover do começo)
+_PREFIXO_RE = re.compile(
+    r'^\s*(filmes?|s[eé]ries?|movies?|vod|novelas?|animes?|canais?|tv|show|document[áa]rio)\s*[:\-–—|•·]\s*',
+    re.I,
+)
+
+# Separadores que indicam fim de título (o que vier depois é lixo)
+_SEPARADOR_FIM_RE = re.compile(
+    r'\s*[\-–—|•·]\s*(?:'
+    r'\d{4}|'                # - 2024
+    r'\d+p|'                 # - 1080p
+    r'dual|dub|leg|hd|sd|4k|uhd|fhd|'  # - DUBLADO
+    r'web|bluray|bdrip|'     # - WEB-DL
+    r'x26\d|h26\d|hevc'      # - x264
+    r')\b.*$',
+    re.I,
+)
+
 
 def _clean_name(name: str) -> str:
     if not name:
         return ""
-    t = name
+    t = name.strip()
+
+    # 1. Remove prefixo tipo "FILME:", "SÉRIE -", "MOVIE |" etc
+    t = _PREFIXO_RE.sub('', t)
+
+    # 2. Remove episódio (S01E02)
     t = EPISODE_RE.sub(" ", t)
+
+    # 3. Remove ano entre parênteses/colchetes
     t = re.sub(r'[\(\[]\s*(19|20)\d{2}\s*[\)\]]', ' ', t)
+
+    # 4. Remove #hashtags
     t = re.sub(r'#\S+', ' ', t)
+
+    # 5. Remove colchetes inteiros (ex: [L], [Dublado], [1080p])
     t = re.sub(r'\[[^\]]*\]', ' ', t)
-    t = re.sub(r'\(([^)]*)\)', r'\1', t)
-    t = re.sub(r'^\s*(filme|série|serie|movie|vod|novela|anime)\s*[:\-–—|]\s*', '', t, flags=re.I)
-    t = t.replace("|", " ").replace("/", " ").replace("\\", " ")
+
+    # 6. Remove parênteses com conteúdo técnico (mas mantém o resto)
+    t = re.sub(r'\(\s*\)', ' ', t)  # () vazio
+    t = re.sub(r'\(\s*(?:dub|leg|hd|sd|4k|1080p?|720p?|dual)\s*\)', ' ', t, flags=re.I)
+
+    # 7. Remove TUDO depois de um separador que indica qualidade
+    #    Ex: "Filme - 1080p Dublado" → "Filme"
+    t = _SEPARADOR_FIM_RE.sub('', t)
+
+    # 8. Remove tags técnicas soltas
+    t = _TAGS_TECNICAS.sub(' ', t)
+
+    # 9. Remove barras e pipes residuais
+    t = re.sub(r'[|/\\]', ' ', t)
+
+    # 10. Normaliza hífens e travessões
     t = re.sub(r'[–—]', '-', t)
+
+    # 11. Remove ano solto no final (último token, se for 1900-2099)
+    t = re.sub(r'[\s\-–—_.,;:]+(19|20)\d{2}\s*$', '', t)
+
+    # 12. Remove números "ID" no final (3+ dígitos)
+    #     Não remove "Rocky 2" (1 dígito) mas remove "Filme Nome 12345"
+    t = re.sub(r'[\s\-–—_.,;:]+#?\d{3,}\s*$', '', t)
+
+    # 13. Remove duplicação de espaços/hífens
+    t = re.sub(r'\s*-\s*-\s*', ' - ', t)
     t = re.sub(r'\s+', ' ', t)
-    return t.strip(" -–—_.,;:()[]{}")
+
+    # 14. Remove separadores sobrando nas pontas
+    t = t.strip(" -–—_.,;:()[]{}")
+
+    return t
 
 
 def _clean_category(cat: str) -> str:
     if not cat:
         return "Geral"
     c = cat.strip()
-    c = re.sub(r'^\s*(filmes?|séries?|series?|canais?|movies?|tv|vod|novelas?|animes?)\s*[•·\-–—:|,]\s*', '', c, flags=re.I)
-    c = re.sub(r'^\s*(filmes?|séries?|series?|canais?|movies?|tv|vod)\s+', '', c, flags=re.I)
+    c = re.sub(r'^\s*(filmes?|s[eé]ries?|canais?|movies?|tv|vod|novelas?|animes?)\s*[•·\-–—:|,]\s*', '', c, flags=re.I)
+    c = re.sub(r'^\s*(filmes?|s[eé]ries?|canais?|movies?|tv|vod)\s+', '', c, flags=re.I)
     c = re.sub(r'\s*[•·|/]\s*', ' ', c)
     c = re.sub(r'\s+', ' ', c).strip()
     if c.isupper():
@@ -49,9 +123,6 @@ def _extract_year(text):
     return int(m.group(1)) if m else None
 
 
-# ==========================================================
-# FETCH — chamadas separadas por tipo
-# ==========================================================
 async def _fetch(client: httpx.AsyncClient, action: str) -> list:
     url = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action={action}"
     try:
@@ -67,7 +138,6 @@ async def _fetch(client: httpx.AsyncClient, action: str) -> list:
 
 
 async def fetch_filmes() -> list:
-    """Baixa filmes + categorias e retorna lista pronta."""
     print("[•] Baixando filmes (API Xtream)...")
     async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
         cats, streams = await asyncio.gather(
@@ -104,7 +174,6 @@ async def fetch_filmes() -> list:
 
 
 async def fetch_series() -> list:
-    """Baixa séries + categorias e retorna lista pronta."""
     print("[•] Baixando séries (API Xtream)...")
     async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
         cats, series = await asyncio.gather(
@@ -141,7 +210,6 @@ async def fetch_series() -> list:
 
 
 async def fetch_canais() -> list:
-    """Baixa canais + categorias e retorna lista pronta."""
     print("[•] Baixando canais (API Xtream)...")
     async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
         cats, streams = await asyncio.gather(

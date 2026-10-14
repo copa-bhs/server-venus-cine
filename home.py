@@ -18,14 +18,10 @@ import logos
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
-# Cache do hero em disco (7 dias)
 HERO_CACHE_FILE = CACHE_DIR / "hero_cache.json"
-HERO_TTL = 7 * 24 * 60 * 60  # 7 dias em segundos
+HERO_TTL = 7 * 24 * 60 * 60
 
 
-# ==========================================================
-# HELPERS
-# ==========================================================
 def _semana_atual() -> int:
     iso = datetime.now().isocalendar()
     return iso.year * 100 + iso.week
@@ -85,9 +81,6 @@ def _slugify(texto: str, ano=None) -> str:
     return t
 
 
-# ==========================================================
-# CACHE DO HERO (7 dias)
-# ==========================================================
 def _hero_cache_ler() -> list | None:
     if not HERO_CACHE_FILE.exists():
         return None
@@ -95,16 +88,10 @@ def _hero_cache_ler() -> list | None:
         data = json.loads(HERO_CACHE_FILE.read_text(encoding="utf-8"))
         ts = data.get("_ts", 0)
         if time.time() - ts > HERO_TTL:
-            print("[HeroCache] Cache expirado (>7 dias)")
             return None
         hero = data.get("hero", [])
-        if not hero:
-            return None
-        dias = int((HERO_TTL - (time.time() - ts)) / 86400)
-        print(f"[HeroCache] Usando hero do cache ({dias} dias restantes)")
-        return hero
-    except Exception as e:
-        print(f"[HeroCache] Erro ao ler: {e}")
+        return hero or None
+    except Exception:
         return None
 
 
@@ -114,23 +101,18 @@ def _hero_cache_salvar(hero: list):
             json.dumps({"_ts": time.time(), "hero": hero}, ensure_ascii=False),
             encoding="utf-8",
         )
-        print(f"[HeroCache] Hero salvo em cache por 7 dias ({len(hero)} slides)")
-    except Exception as e:
-        print(f"[HeroCache] Erro ao salvar: {e}")
+    except Exception:
+        pass
 
 
 def limpar_hero_cache():
     try:
         if HERO_CACHE_FILE.exists():
             HERO_CACHE_FILE.unlink()
-            print("[HeroCache] Cache limpo")
     except Exception:
         pass
 
 
-# ==========================================================
-# ÍNDICE RÁPIDO
-# ==========================================================
 def _construir_indice_rapido(filmes: list, series: list) -> dict:
     indice = {"filmes": {}, "series": {}}
     for f in filmes:
@@ -160,20 +142,12 @@ def _procurar_no_indice(indice: dict, titulo_tmdb: str, tipo: str):
     return None
 
 
-# ==========================================================
-# TMDB — LANÇAMENTOS (não trending)
-# ==========================================================
 async def _tmdb_now_playing_movies() -> list:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/movie/now_playing",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": TMDB_LANGUAGE,
-                    "region": "BR",
-                    "page": 1,
-                },
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "region": "BR", "page": 1},
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
@@ -187,12 +161,7 @@ async def _tmdb_upcoming_movies() -> list:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/movie/upcoming",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": TMDB_LANGUAGE,
-                    "region": "BR",
-                    "page": 1,
-                },
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "region": "BR", "page": 1},
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
@@ -206,11 +175,7 @@ async def _tmdb_on_the_air_tv() -> list:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/tv/on_the_air",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": TMDB_LANGUAGE,
-                    "page": 1,
-                },
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "page": 1},
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
@@ -224,11 +189,7 @@ async def _tmdb_airing_today_tv() -> list:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{TMDB_BASE}/tv/airing_today",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": TMDB_LANGUAGE,
-                    "page": 1,
-                },
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE, "page": 1},
                 headers={"User-Agent": USER_AGENT},
             )
             r.raise_for_status()
@@ -237,9 +198,6 @@ async def _tmdb_airing_today_tv() -> list:
         return []
 
 
-# ==========================================================
-# BUSCAR CANDIDATOS (lançamentos do TMDB)
-# ==========================================================
 async def _buscar_candidatos_lancamentos() -> list:
     print("[Hero] Buscando lançamentos no TMDB...")
     resultados = await asyncio.gather(
@@ -254,10 +212,6 @@ async def _buscar_candidatos_lancamentos() -> list:
     upcoming = resultados[1] if isinstance(resultados[1], list) else []
     on_the_air = resultados[2] if isinstance(resultados[2], list) else []
     airing_today = resultados[3] if isinstance(resultados[3], list) else []
-
-    print(f"[Hero] TMDB: {len(now_playing)} em cartaz, "
-          f"{len(upcoming)} em breve, {len(on_the_air)} no ar, "
-          f"{len(airing_today)} hoje")
 
     vistos = set()
     candidatos = []
@@ -281,16 +235,12 @@ async def _buscar_candidatos_lancamentos() -> list:
     return candidatos
 
 
-# ==========================================================
-# MONTAR HERO (5 slides)
-# ==========================================================
 async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
     if not TMDB_ENABLED:
         return []
 
     candidatos = await _buscar_candidatos_lancamentos()
     if not candidatos:
-        print("[Hero] Nenhum lançamento no TMDB")
         return []
 
     indice = _construir_indice_rapido(filmes, series)
@@ -305,30 +255,26 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 "tipo": c["tipo"],
             })
 
-    print(f"[Hero] {len(encontrados)} lançamentos existem na lista IPTV")
-
     if not encontrados:
-        print("[Hero] Nenhum lançamento do TMDB na IPTV. Usando fallback local...")
         recentes = []
         for f in filmes:
             try:
                 if int(f.get("ano") or 0) >= 2020:
                     recentes.append({"item_iptv": f, "titulo_tmdb": f.get("titulo"), "tipo": "filme"})
-            except: pass
+            except Exception:
+                pass
         for s in series:
             try:
                 if int(s.get("ano") or 0) >= 2020:
                     recentes.append({"item_iptv": s, "titulo_tmdb": s.get("titulo"), "tipo": "serie"})
-            except: pass
-        
-        # Ordena pelos mais recentes e pega os 20 primeiros
+            except Exception:
+                pass
         recentes.sort(key=lambda x: int(x["item_iptv"].get("ano") or 0), reverse=True)
         encontrados = recentes[:20]
 
     if not encontrados:
         return []
 
-    # Mantém ordem do TMDB (mais recentes primeiro) — sem shuffle
     selecionados = encontrados[:n]
 
     async def _enriquecer(m):
@@ -343,10 +289,7 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
             if not dados:
                 return None
 
-            # LOGO: TMDB → Fanart
             logo_final = dados.get("logo")
-            logo_fonte = "tmdb" if logo_final else None
-
             if not logo_final and dados.get("tmdb_id"):
                 try:
                     if tipo == "serie":
@@ -355,12 +298,10 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                         logo_fanart = await logos.buscar_logo_fanart_movie(dados.get("tmdb_id"))
                     if logo_fanart:
                         logo_final = logo_fanart
-                        logo_fonte = "fanart"
                 except Exception:
                     pass
 
             banner = dados.get("banner_4k") or dados.get("banner")
-
             slug_base = _slugify(item.get("titulo") or "", item.get("ano"))
             base = (PUBLIC_BASE_URL or "").rstrip("/")
             url_stream = None
@@ -374,7 +315,6 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 "banner": banner or item.get("capa"),
                 "capa": dados.get("capa") or item.get("capa"),
                 "logo": logo_final,
-                "logo_fonte": logo_fonte,
                 "sinopse": dados.get("sinopse"),
                 "score": dados.get("score"),
                 "classificacao": dados.get("classificacao"),
@@ -383,42 +323,82 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
                 "trailer_url": dados.get("trailer_url"),
                 "url_stream": url_stream,
             }
-        except Exception as e:
-            print(f"[!] Hero falhou pra {item.get('titulo')}: {e}")
+        except Exception:
             return None
 
     resultados = await asyncio.gather(*[_enriquecer(m) for m in selecionados])
-    hero_final = [r for r in resultados if r]
-
-    print(f"[Hero] Hero final: {len(hero_final)} slides")
-    return hero_final
+    return [r for r in resultados if r]
 
 
-# ==========================================================
-# GET HERO (com cache de 7 dias)
-# ==========================================================
+def _hero_manual_do_banco() -> list:
+    """Lê slides manuais do banco. Retorna lista vazia se não tem."""
+    try:
+        from db import SessionLocal, Slide as SlideDB, Filme as FilmeDB, Serie as SerieDB
+        db = SessionLocal()
+        try:
+            slides_db = db.query(SlideDB).filter(
+                SlideDB.ativo == True
+            ).order_by(SlideDB.ordem).all()
+
+            if not slides_db:
+                return []
+
+            hero = []
+            for s in slides_db:
+                ref = None
+                if s.ref_tipo == "filme":
+                    ref = db.query(FilmeDB).get(s.ref_id)
+                elif s.ref_tipo == "serie":
+                    ref = db.query(SerieDB).get(s.ref_id)
+
+                if not ref:
+                    continue
+
+                slug_base = _slugify(ref.titulo or "", ref.ano)
+                base = (PUBLIC_BASE_URL or "").rstrip("/")
+                url_stream = f"{base}/stream/{slug_base}.mp4" if base else f"/stream/{slug_base}.mp4"
+
+                hero.append({
+                    "id": ref.id,
+                    "tipo": "filme" if s.ref_tipo == "filme" else "serie",
+                    "titulo": s.titulo or ref.titulo,
+                    "banner": s.banner or getattr(ref, "banner", None) or ref.capa,
+                    "capa": ref.capa,
+                    "logo": s.logo or getattr(ref, "logo", None),
+                    "sinopse": s.sinopse or getattr(ref, "sinopse", None),
+                    "score": None,
+                    "classificacao": None,
+                    "ano": ref.ano,
+                    "generos": [],
+                    "trailer_url": None,
+                    "url_stream": url_stream,
+                    "manual": True,
+                })
+            print(f"[Hero] Usando {len(hero)} slides manuais do banco")
+            return hero
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[Hero] Erro ao ler slides manuais: {e}")
+        return []
+
+
 async def get_hero(filmes: list, series: list, n: int = 5, force: bool = False) -> list:
-    """
-    Retorna o hero. Usa cache de 7 dias.
-    Se force=True, ignora o cache e monta de novo.
-    """
+    manual = _hero_manual_do_banco()
+    if manual:
+        return manual
+
     if not force:
         cached = _hero_cache_ler()
         if cached:
             return cached
 
-    print("[Hero] Montando hero novo...")
     hero = await _montar_hero_async(filmes, series, n)
-
     if hero:
         _hero_cache_salvar(hero)
-
     return hero
 
 
-# ==========================================================
-# CARD SIMPLES
-# ==========================================================
 def _card_simples(item: dict, tipo: str | None = None) -> dict:
     return {
         "id": item.get("id"),
@@ -429,9 +409,6 @@ def _card_simples(item: dict, tipo: str | None = None) -> dict:
     }
 
 
-# ==========================================================
-# COLETORES
-# ==========================================================
 def _tem_capa(item: dict) -> bool:
     return bool(item.get("capa"))
 
@@ -463,9 +440,6 @@ def _por_categoria(itens: list, palavras: list, n: int = 15) -> list:
     return validos[:n]
 
 
-# ==========================================================
-# COLEÇÕES
-# ==========================================================
 def _construir_colecoes(filmes: list, series: list) -> list:
     todos = filmes + series
     colecoes = []
@@ -500,9 +474,6 @@ def _construir_colecoes(filmes: list, series: list) -> list:
     return colecoes
 
 
-# ==========================================================
-# BUILDER PRINCIPAL — aceita force_hero
-# ==========================================================
 async def build_home_async(index: dict, force_hero: bool = False) -> dict:
     filmes = index.get("filmes", [])
     series = index.get("series", [])

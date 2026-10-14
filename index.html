@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vênus Cine · Admin</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+    * { box-sizing: border-box; }
+    body { background: #0a0a0a; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0a0a0a; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    .pulse { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    .sidebar-link.active { background: rgba(229,9,20,.12); color: #E50914; border-left: 3px solid #E50914; }
+    .sidebar-link:hover:not(.active) { background: rgba(255,255,255,.04); }
+    .stat-card { background: linear-gradient(135deg, #141414 0%, #0f0f0f 100%); border: 1px solid #262626; }
+    .toast-slide { animation: slideIn .3s ease; }
+    @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .input-dark { width: 100%; height: 40px; padding: 0 12px; background: #0a0a0a; border: 1px solid #262626; border-radius: 8px; color: #fff; font-size: 14px; outline: none; }
+    .input-dark:focus { border-color: #E50914; }
+    textarea.input-dark { height: auto; padding: 10px 12px; resize: vertical; }
+</style>
+</head>
+<body>
+
+<div class="flex min-h-screen">
+    <aside id="sidebar" class="w-60 bg-[#0f0f0f] border-r border-[#262626] flex flex-col fixed lg:static inset-y-0 left-0 z-40 -translate-x-full lg:translate-x-0 transition-transform">
+        <div class="p-4 border-b border-[#262626]">
+            <div class="flex items-center gap-2">
+                <span class="text-2xl font-black italic text-red-600" style="text-shadow:0 0 12px rgba(229,9,20,.7)">V</span>
+                <div>
+                    <div class="text-sm font-bold">Vênus Cine</div>
+                    <div class="text-[10px] text-gray-500">Painel Admin</div>
+                </div>
+            </div>
+        </div>
+
+        <nav class="flex-1 py-3 overflow-y-auto">
+            <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
+            <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
+            <a href="#filmes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="filmes"><i class="fa-solid fa-film w-4 text-center"></i> Filmes</a>
+            <a href="#series" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="series"><i class="fa-solid fa-tv w-4 text-center"></i> Séries</a>
+            <a href="#canais" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="canais"><i class="fa-solid fa-satellite-dish w-4 text-center"></i> Canais</a>
+            <div class="my-2 px-4"><div class="h-px bg-[#262626]"></div></div>
+            <a href="#novidades" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="novidades"><i class="fa-solid fa-sparkles w-4 text-center"></i> Novidades</a>
+            <a href="#proxy" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="proxy"><i class="fa-solid fa-tower-broadcast w-4 text-center"></i> Proxy</a>
+            <a href="#sistema" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="sistema"><i class="fa-solid fa-server w-4 text-center"></i> Sistema</a>
+        </nav>
+
+        <div class="p-4 border-t border-[#262626] space-y-2">
+            <div class="flex items-center gap-2 text-[10px]">
+                <span class="w-2 h-2 rounded-full bg-gray-600" id="status-dot"></span>
+                <span id="status-label" class="text-gray-500">Conectando...</span>
+            </div>
+            <div class="flex items-center gap-2 text-[10px]">
+                <span class="w-2 h-2 rounded-full bg-gray-600" id="ws-dot"></span>
+                <span id="ws-label" class="text-gray-500">WS offline</span>
+            </div>
+        </div>
+    </aside>
+
+    <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black/60 z-30 hidden lg:hidden"></div>
+
+    <div class="flex-1 flex flex-col min-w-0">
+        <header class="sticky top-0 z-20 bg-[#0a0a0a]/95 backdrop-blur border-b border-[#262626] px-4 py-3 flex items-center gap-3">
+            <button onclick="toggleSidebar()" class="lg:hidden w-9 h-9 rounded-lg bg-[#141414] border border-[#262626] flex items-center justify-center">
+                <i class="fa-solid fa-bars text-sm"></i>
+            </button>
+            <h1 id="page-title" class="text-lg font-bold flex-1">Dashboard</h1>
+            <div id="ws-badge" class="h-9 px-3 rounded-lg bg-[#141414] border border-[#262626] flex items-center gap-2 text-xs text-gray-500">
+                <span class="w-2 h-2 rounded-full bg-gray-500" id="ws-badge-dot"></span>
+                <span id="ws-badge-text">--</span>
+            </div>
+            <button onclick="manualRefresh()" class="h-9 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs font-medium flex items-center gap-2 hover:bg-[#1a1a1a]">
+                <i class="fa-solid fa-rotate-right"></i> <span class="hidden sm:inline">Atualizar</span>
+            </button>
+        </header>
+
+        <main id="content" class="flex-1 p-4 lg:p-6 overflow-x-hidden"></main>
+    </div>
+</div>
+
+<div id="toast-root" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+<div id="modal-root"></div>
+
+<script>
+const API = '';
+
+let WS = null;
+let WS_RECONNECT_TIMER = null;
+
+function conectarWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws`;
+    try {
+        WS = new WebSocket(url);
+    } catch (e) { agendarReconectarWS(); return; }
+
+    WS.onopen = () => {
+        atualizarStatusWS(true);
+        Toast.show('🟢 Tempo real conectado', 'success', 2000);
+    };
+    WS.onclose = () => {
+        atualizarStatusWS(false);
+        agendarReconectarWS();
+    };
+    WS.onerror = () => atualizarStatusWS(false);
+    WS.onmessage = (ev) => {
+        if (ev.data === 'pong') return;
+        try {
+            const msg = JSON.parse(ev.data);
+            tratarEvento(msg.evento, msg.dados);
+        } catch {}
+    };
+
+    setInterval(() => {
+        if (WS && WS.readyState === WebSocket.OPEN) WS.send('ping');
+    }, 25000);
+}
+
+function agendarReconectarWS() {
+    if (WS_RECONNECT_TIMER) clearTimeout(WS_RECONNECT_TIMER);
+    WS_RECONNECT_TIMER = setTimeout(conectarWS, 3000);
+}
+
+function atualizarStatusWS(online) {
+    const dot = document.getElementById('ws-dot');
+    const lbl = document.getElementById('ws-label');
+    const bd = document.getElementById('ws-badge-dot');
+    const bt = document.getElementById('ws-badge-text');
+    if (online) {
+        dot.className = 'w-2 h-2 rounded-full bg-green-400 pulse';
+        lbl.textContent = 'Tempo real ativo';
+        bd.className = 'w-2 h-2 rounded-full bg-green-400 pulse';
+        bt.textContent = 'AO VIVO';
+        bt.className = 'text-green-400 font-bold';
+    } else {
+        dot.className = 'w-2 h-2 rounded-full bg-red-500';
+        lbl.textContent = 'WS offline';
+        bd.className = 'w-2 h-2 rounded-full bg-red-500';
+        bt.textContent = 'OFFLINE';
+        bt.className = 'text-red-400';
+    }
+}
+
+function tratarEvento(evento, dados) {
+    if (evento === 'catalogo_sincronizado') {
+        Toast.show(`📡 Catálogo: ${dados.total_filmes} filmes, ${dados.total_series} séries`, 'info', 4000);
+        if (['dashboard','filmes','series','canais'].includes(Router.current)) Router.render();
+    } else if (evento === 'item_editado') {
+        Toast.show(`✏️ ${dados.tipo} "${dados.titulo}" atualizado`, 'success', 3000);
+        if (['filmes','series','canais','slider'].includes(Router.current)) Router.render();
+    } else if (evento === 'novidades') {
+        Toast.show(`🎉 ${dados.filmes_novos} filmes, ${dados.series_novas} séries novas`, 'warn', 6000);
+    }
+}
+
+const Toast = {
+    show(msg, type = 'info', dur = 3000) {
+        const colors = { info: 'border-blue-500', success: 'border-green-500', error: 'border-red-500', warn: 'border-yellow-500' };
+        const icons = { info: 'fa-circle-info', success: 'fa-circle-check', error: 'fa-circle-exclamation', warn: 'fa-triangle-exclamation' };
+        const el = document.createElement('div');
+        el.className = `toast-slide bg-[#141414] border-l-4 ${colors[type] || colors.info} rounded-lg px-4 py-3 text-sm shadow-2xl min-w-[260px] max-w-[380px] flex items-start gap-3`;
+        el.innerHTML = `<i class="fa-solid ${icons[type]} mt-0.5"></i><div class="flex-1">${msg}</div>`;
+        document.getElementById('toast-root').appendChild(el);
+        setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, dur);
+    }
+};
+
+const Api = {
+    async get(path) {
+        const r = await fetch(API + path);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+    },
+    async post(path) {
+        const r = await fetch(API + path, { method: 'POST' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+    },
+    status() { return this.get('/status'); },
+    proxyStats() { return this.get('/proxy/stats'); },
+    novidades() { return this.get('/novidades'); },
+    refresh() { return this.post('/refresh'); },
+    verificarNovidades() { return this.post('/novidades/verificar'); },
+    adminFilmes: (q='', page=1, size=30) => Api.get(`/admin/filmes?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
+    adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
+    adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
+    adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
+};
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (n) => Number(n || 0).toLocaleString('pt-BR');
+
+function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('sidebar-overlay');
+    const open = !sb.classList.contains('-translate-x-full');
+    if (open) { sb.classList.add('-translate-x-full'); ov.classList.add('hidden'); }
+    else { sb.classList.remove('-translate-x-full'); ov.classList.remove('hidden'); }
+}
+
+const Router = {
+    current: 'dashboard',
+    go(route) { window.location.hash = '#' + route; },
+    handle() {
+        const h = window.location.hash.replace('#', '') || 'dashboard';
+        this.current = h;
+        document.querySelectorAll('.sidebar-link').forEach(a => {
+            a.classList.toggle('active', a.dataset.route === h);
+        });
+        const titles = {
+            dashboard: 'Dashboard', slider: 'Slider (Hero)',
+            filmes: 'Filmes', series: 'Séries', canais: 'Canais',
+            novidades: 'Novidades', proxy: 'Proxy de Streaming', sistema: 'Sistema'
+        };
+        document.getElementById('page-title').textContent = titles[h] || h;
+        this.render();
+        if (window.innerWidth < 1024) {
+            document.getElementById('sidebar').classList.add('-translate-x-full');
+            document.getElementById('sidebar-overlay').classList.add('hidden');
+        }
+    },
+    async render() {
+        const c = document.getElementById('content');
+        c.innerHTML = `<div class="flex items-center justify-center h-64 text-gray-500"><i class="fa-solid fa-circle-notch fa-spin text-2xl"></i></div>`;
+        try {
+            if (this.current === 'dashboard') await Views.dashboard(c);
+            else if (this.current === 'slider') await Views.slider(c);
+            else if (this.current === 'filmes') await Views.list(c, 'filme');
+            else if (this.current === 'series') await Views.list(c, 'serie');
+            else if (this.current === 'canais') await Views.list(c, 'canal');
+            else if (this.current === 'novidades') await Views.novidades(c);
+            else if (this.current === 'proxy') await Views.proxy(c);
+            else if (this.current === 'sistema') await Views.sistema(c);
+        } catch (e) {
+            c.innerHTML = `<div class="text-center py-16 text-red-400">Erro: ${esc(e.message)}</div>`;
+        }
+    }
+};
+
+const Views = {
+    async dashboard(c) {
+        const s = await Api.status().catch(() => ({}));
+        const stats = s.stats || {};
+        const proxy = s.proxy || {};
+        c.innerHTML = `
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                ${this.statCard('Filmes', fmt(stats.total_filmes), 'fa-film', 'text-blue-400')}
+                ${this.statCard('Séries', fmt(stats.total_series), 'fa-tv', 'text-purple-400')}
+                ${this.statCard('Canais', fmt(stats.total_canais), 'fa-satellite-dish', 'text-green-400')}
+                ${this.statCard('Slugs proxy', fmt(proxy.slugs_carregados), 'fa-link', 'text-yellow-400')}
+            </div>
+            <div class="grid md:grid-cols-3 gap-4 mb-6">
+                <div class="stat-card rounded-xl p-4">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Cache M3U</div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-2 h-2 rounded-full ${s.valid ? 'bg-green-400' : 'bg-yellow-400'}"></span>
+                        <span class="text-sm font-medium">${s.valid ? 'Válido' : 'Expirado'}</span>
+                    </div>
+                    <div class="text-[11px] text-gray-500">${s.age_seconds ? `Atualizado há ${Math.floor(s.age_seconds / 60)} min` : 'Sem dados'}</div>
+                </div>
+                <div class="stat-card rounded-xl p-4">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">SQLite</div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                        <span class="text-sm font-medium">Sincronizado</span>
+                    </div>
+                    <div class="text-[11px] text-gray-500">Espelho dos 3 JSONs</div>
+                </div>
+                <div class="stat-card rounded-xl p-4">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Clientes WS</div>
+                    <div class="text-2xl font-black" id="ws-clientes">${s.ws_clientes || 0}</div>
+                    <div class="text-[11px] text-gray-500 mt-1">conectados agora</div>
+                </div>
+            </div>
+            <div class="stat-card rounded-xl p-4">
+                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">Ações</div>
+                <div class="flex flex-wrap gap-2">
+                    <button onclick="Actions.refresh()" class="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-medium flex items-center gap-2">
+                        <i class="fa-solid fa-rotate"></i> Refresh M3U
+                    </button>
+                    <button onclick="Actions.novidades()" class="h-9 px-4 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs font-medium flex items-center gap-2">
+                        <i class="fa-solid fa-sparkles"></i> Verificar novidades
+                    </button>
+                </div>
+            </div>
+        `;
+    },
+
+    statCard(label, value, icon, color) {
+        return `
+            <div class="stat-card rounded-xl p-4">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs font-semibold text-gray-400 uppercase">${label}</div>
+                    <i class="fa-solid ${icon} ${color}"></i>
+                </div>
+                <div class="text-2xl font-black">${value}</div>
+            </div>
+        `;
+    },
+
+    // ============================================================
+    // SLIDER
+    // ============================================================
+    async slider(c) {
+        const data = await fetch(API + '/admin/slider').then(r => r.json()).catch(() => ({ items: [] }));
+        const itens = data.items || [];
+
+        c.innerHTML = `
+            <div class="stat-card rounded-xl p-4 mb-4">
+                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">
+                    <i class="fa-solid fa-plus mr-1"></i> Adicionar ao slider
+                </div>
+                <div class="flex flex-wrap gap-2 items-end">
+                    <div class="flex-1 min-w-[140px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">Tipo</label>
+                        <select id="sl-tipo" class="input-dark">
+                            <option value="filme">🎬 Filme</option>
+                            <option value="serie">📺 Série</option>
+                        </select>
+                    </div>
+                    <div class="flex-[2] min-w-[220px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">Buscar título</label>
+                        <input id="sl-busca" class="input-dark" placeholder="Digite pra buscar...">
+                    </div>
+                    <button onclick="Views._sliderBuscar()" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
+                        <i class="fa-solid fa-search"></i> Buscar
+                    </button>
+                </div>
+                <div id="sl-resultados" class="mt-3 max-h-64 overflow-y-auto"></div>
+            </div>
+
+            <div class="stat-card rounded-xl p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-xs font-semibold text-gray-400 uppercase">
+                        <i class="fa-solid fa-images mr-1"></i> Slides ativos (${itens.length})
+                    </div>
+                    <div class="text-[10px] text-gray-500">Use ↑↓ pra reordenar</div>
+                </div>
+                ${itens.length === 0
+                    ? `<div class="text-center text-gray-500 py-8 text-sm">Nenhum slide manual. O hero automático do TMDB tá sendo usado.</div>`
+                    : `<div class="space-y-2" id="sl-lista">${itens.map((s, i) => Views._sliderCard(s, i, itens.length)).join('')}</div>`
+                }
+            </div>
+        `;
+
+        document.getElementById('sl-busca').onkeydown = (e) => {
+            if (e.key === 'Enter') Views._sliderBuscar();
+        };
+    },
+
+    _sliderCard(s, i, total) {
+        return `
+            <div class="bg-[#0f0f0f] border border-[#262626] rounded-lg p-3 flex items-center gap-3" data-slide-id="${s.id}">
+                <div class="flex flex-col gap-1">
+                    <button onclick="Views._sliderMover(${s.id}, ${i - 1})" ${i === 0 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30">
+                        <i class="fa-solid fa-chevron-up"></i>
+                    </button>
+                    <button onclick="Views._sliderMover(${s.id}, ${i + 1})" ${i === total - 1 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30">
+                        <i class="fa-solid fa-chevron-down"></i>
+                    </button>
+                </div>
+                <div class="w-20 h-12 rounded overflow-hidden bg-[#0a0a0a] flex-shrink-0">
+                    ${s.banner ? `<img src="${esc(s.banner)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-sm font-bold truncate">${esc(s.titulo)}</div>
+                    <div class="text-[10px] text-gray-500">
+                        ${s.ref_tipo === 'filme' ? '🎬' : '📺'} ${esc(s.ref?.ano || '—')} · ID ${s.ref_id}
+                    </div>
+                </div>
+                <button onclick="Views._sliderEditar(${s.id})" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222]" title="Editar">
+                    <i class="fa-solid fa-pen text-xs"></i>
+                </button>
+                <button onclick="Views._sliderRemover(${s.id})" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Remover">
+                    <i class="fa-solid fa-trash text-xs"></i>
+                </button>
+            </div>
+        `;
+    },
+
+    async _sliderBuscar() {
+        const tipo = document.getElementById('sl-tipo').value;
+        const q = document.getElementById('sl-busca').value.trim();
+        const box = document.getElementById('sl-resultados');
+        box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs"><i class="fa-solid fa-circle-notch fa-spin"></i></div>';
+
+        const rota = tipo === 'filme' ? 'filmes' : 'series';
+        try {
+            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=20`);
+            const d = await r.json();
+            if (!d.items?.length) {
+                box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Nada encontrado</div>';
+                return;
+            }
+            box.innerHTML = d.items.map(it => `
+                <div class="flex items-center gap-3 bg-[#0a0a0a] border border-[#262626] rounded-lg p-2 mb-1 hover:border-red-600 cursor-pointer"
+                     onclick="Views._sliderAdicionar('${tipo}', ${it.id})">
+                    <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden flex-shrink-0">
+                        ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-xs font-bold truncate">${esc(it.titulo)}</div>
+                        <div class="text-[10px] text-gray-500">${esc(it.ano || '—')}</div>
+                    </div>
+                    <button class="h-8 px-3 rounded bg-red-600 text-xs font-bold">
+                        <i class="fa-solid fa-plus"></i> Adicionar
+                    </button>
+                </div>
+            `).join('');
+        } catch (e) {
+            box.innerHTML = `<div class="text-red-400 text-xs text-center py-3">Erro: ${esc(e.message)}</div>`;
+        }
+    },
+
+    async _sliderAdicionar(tipo, id) {
+        const fd = new FormData();
+        fd.append('ref_tipo', tipo);
+        fd.append('ref_id', id);
+        try {
+            const r = await fetch(API + '/admin/slider', { method: 'POST', body: fd });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            Toast.show('✅ Adicionado ao slider!', 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    async _sliderRemover(id) {
+        if (!confirm('Remover esse slide?')) return;
+        try {
+            await fetch(API + '/admin/slider/' + id, { method: 'DELETE' });
+            Toast.show('🗑️ Removido', 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    async _sliderMover(id, novaPos) {
+        const lista = document.querySelectorAll('#sl-lista [data-slide-id]');
+        const ids = Array.from(lista).map(el => el.dataset.slideId);
+        const atual = ids.indexOf(String(id));
+        if (atual === -1 || novaPos < 0 || novaPos >= ids.length) return;
+
+        ids.splice(atual, 1);
+        ids.splice(novaPos, 0, String(id));
+
+        const fd = new FormData();
+        fd.append('ordem', ids.join(','));
+        try {
+            await fetch(API + '/admin/slider/reordenar', { method: 'POST', body: fd });
+            Toast.show('↕️ Reordenado', 'success', 1200);
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    async _sliderEditar(id) {
+        const r = await fetch(API + '/admin/slider').then(r => r.json());
+        const s = (r.items || []).find(x => x.id === id);
+        if (!s) return;
+
+        const root = document.getElementById('modal-root');
+        root.innerHTML = `
+            <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onclick="if(event.target===this)Views.fecharModal()">
+                <div class="bg-[#141414] rounded-2xl w-full max-w-lg border border-[#262626]">
+                    <div class="p-4 border-b border-[#262626] flex items-center justify-between">
+                        <div class="font-bold text-sm">Editar slide: ${esc(s.titulo)}</div>
+                        <button onclick="Views.fecharModal()" class="w-8 h-8 rounded-lg hover:bg-[#222]">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                    <form onsubmit="Views._sliderSalvar(event, ${id})" class="p-5 space-y-3">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Título (vazio = usa do banco)</label>
+                            <input name="titulo" value="${esc(s.titulo || '')}" class="input-dark">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">URL do banner (vazio = usa do banco)</label>
+                            <input name="banner" value="${esc(s.banner || '')}" class="input-dark font-mono text-xs">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">URL do logo (vazio = usa do banco)</label>
+                            <input name="logo" value="${esc(s.logo || '')}" class="input-dark font-mono text-xs">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Sinopse customizada</label>
+                            <textarea name="sinopse" rows="3" class="input-dark">${esc(s.sinopse || '')}</textarea>
+                        </div>
+                        <div class="flex gap-2 pt-2">
+                            <button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button>
+                            <button type="submit" class="flex-1 h-10 rounded-lg bg-red-600 text-xs font-bold">Salvar</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        `;
+    },
+
+    async _sliderSalvar(ev, id) {
+        ev.preventDefault();
+        const form = ev.target;
+        const fd = new FormData();
+        ['titulo','banner','logo','sinopse'].forEach(k => {
+            fd.append(k, form.querySelector(`[name="${k}"]`).value);
+        });
+        try {
+            const r = await fetch(API + '/admin/slider/' + id, { method: 'PUT', body: fd });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            Toast.show('✅ Slide atualizado', 'success');
+            Views.fecharModal();
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    // ============================================================
+    // LISTAS
+    // ============================================================
+    async list(c, tipo) {
+        const state = window._listState = window._listState || {};
+        state[tipo] = state[tipo] || { page: 1, size: 30, q: '' };
+
+        const load = async () => {
+            const st = state[tipo];
+            let data;
+            if (tipo === 'filme') data = await Api.adminFilmes(st.q, st.page, st.size);
+            else if (tipo === 'serie') data = await Api.adminSeries(st.q, st.page, st.size);
+            else data = await Api.adminCanais(st.q, st.page, st.size);
+            renderList(data);
+        };
+
+        const renderList = (data) => {
+            const items = data.items || [];
+            c.innerHTML = `
+                <div class="flex flex-wrap gap-2 mb-4">
+                    <input id="search-${tipo}" type="text" placeholder="🔍 Buscar título no banco..." value="${esc(state[tipo].q)}"
+                        class="input-dark flex-1 min-w-[200px]">
+                    <button onclick="Views._search('${tipo}')" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
+                        <i class="fa-solid fa-search"></i> Buscar
+                    </button>
+                </div>
+
+                <div class="stat-card rounded-xl overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-[#0f0f0f] border-b border-[#262626] text-xs text-gray-400 uppercase">
+                                <tr>
+                                    <th class="text-left px-4 py-3 w-16"></th>
+                                    <th class="text-left px-4 py-3">Título</th>
+                                    <th class="text-left px-4 py-3 hidden sm:table-cell">Ano</th>
+                                    <th class="text-left px-4 py-3 hidden md:table-cell">Status</th>
+                                    <th class="text-center px-4 py-3 w-24">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${items.length === 0
+                                    ? `<tr><td colspan="5" class="text-center py-12 text-gray-500">Nenhum item</td></tr>`
+                                    : items.map(it => `
+                                        <tr class="border-b border-[#1f1f1f] hover:bg-[#0f0f0f] cursor-pointer" onclick="Views.editar('${tipo}', ${it.id})">
+                                            <td class="px-4 py-3">
+                                                <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden">
+                                                    ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}
+                                                </div>
+                                            </td>
+                                            <td class="px-4 py-3">
+                                                <div class="font-medium truncate max-w-[400px]">${esc(it.titulo)}</div>
+                                                <div class="text-[10px] text-gray-500">ID IPTV: ${esc(it.iptv_id || '—')}</div>
+                                            </td>
+                                            <td class="px-4 py-3 hidden sm:table-cell text-gray-400">${esc(it.ano || '—')}</td>
+                                            <td class="px-4 py-3 hidden md:table-cell">
+                                                ${it.editado
+                                                    ? `<span class="text-[10px] px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">EDITADO</span>`
+                                                    : `<span class="text-[10px] px-2 py-1 rounded bg-gray-500/20 text-gray-400">IPTV</span>`}
+                                            </td>
+                                            <td class="px-4 py-3 text-center">
+                                                <button onclick="event.stopPropagation();Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600 hover:bg-red-700" title="Editar">
+                                                    <i class="fa-solid fa-pen"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between mt-4 text-sm">
+                    <div class="text-gray-500 text-xs">${fmt(data.total)} itens · página ${data.page}</div>
+                    <div class="flex gap-2">
+                        <button ${data.page > 1 ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page - 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40">
+                            <i class="fa-solid fa-chevron-left"></i>
+                        </button>
+                        <button ${(data.page * data.size) < data.total ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page + 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40">
+                            <i class="fa-solid fa-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.getElementById(`search-${tipo}`).onkeydown = (e) => {
+                if (e.key === 'Enter') Views._search(tipo);
+            };
+        };
+
+        await load();
+    },
+
+    _search(tipo) {
+        window._listState[tipo].q = document.getElementById(`search-${tipo}`).value;
+        window._listState[tipo].page = 1;
+        Router.render();
+    },
+    _page(tipo, page) {
+        window._listState[tipo].page = page;
+        Router.render();
+    },
+
+    async editar(tipo, id) {
+        const root = document.getElementById('modal-root');
+        root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+            <div class="bg-[#141414] rounded-2xl border border-[#262626] p-8 text-center">
+                <i class="fa-solid fa-circle-notch fa-spin text-2xl text-red-500"></i>
+                <div class="text-sm text-gray-400 mt-3">Carregando...</div>
+            </div>
+        </div>`;
+
+        try {
+            const it = await Api.adminItem(tipo, id);
+            root.innerHTML = this._renderEditModal(tipo, it);
+        } catch (e) {
+            root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+                <div class="bg-[#141414] rounded-2xl border border-[#262626] p-6 text-center">
+                    <div class="text-red-400 mb-4">Erro: ${esc(e.message)}</div>
+                    <button onclick="Views.fecharModal()" class="h-9 px-4 rounded-lg bg-[#1a1a1a] text-xs">Fechar</button>
+                </div>
+            </div>`;
+        }
+    },
+
+    _renderEditModal(tipo, it) {
+        const tituloTipo = tipo === 'filme' ? '🎬 Filme' : tipo === 'serie' ? '📺 Série' : '📡 Canal';
+        return `
+        <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto" onclick="if(event.target===this)Views.fecharModal()">
+            <div class="bg-[#141414] rounded-2xl w-full max-w-2xl border border-[#262626] my-8">
+                <div class="p-4 border-b border-[#262626] flex items-center justify-between sticky top-0 bg-[#141414] rounded-t-2xl">
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase">Editando</div>
+                        <div class="font-bold">${tituloTipo} · ${esc(it.titulo)}</div>
+                    </div>
+                    <button onclick="Views.fecharModal()" class="w-9 h-9 rounded-lg hover:bg-[#222]">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <form onsubmit="Views.salvar(event, '${tipo}', ${it.id})" class="p-5 space-y-4">
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-1">Título</label>
+                        <input name="titulo" value="${esc(it.titulo || '')}" class="input-dark" required>
+                    </div>
+                    ${tipo !== 'canal' ? `
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Ano</label>
+                            <input name="ano" type="number" value="${it.ano || ''}" class="input-dark">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Categoria</label>
+                            <input name="categoria" value="${esc(it.categoria || '')}" class="input-dark">
+                        </div>
+                    </div>
+                    ` : `
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-1">Categoria</label>
+                        <input name="categoria" value="${esc(it.categoria || '')}" class="input-dark">
+                    </div>
+                    `}
+                    ${tipo === 'filme' || tipo === 'canal' ? `
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-1">URL do stream</label>
+                        <input name="url" value="${esc(it.url || '')}" class="input-dark font-mono text-xs">
+                    </div>
+                    ` : ''}
+                    ${tipo !== 'canal' ? `
+                    <div>
+                        <label class="text-xs text-gray-400 block mb-1">Sinopse</label>
+                        <textarea name="sinopse" rows="3" class="input-dark">${esc(it.sinopse || '')}</textarea>
+                    </div>
+                    ` : ''}
+                    <div class="border-t border-[#262626] pt-4">
+                        <div class="text-xs font-bold text-gray-400 uppercase mb-3">Imagens (opcional)</div>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="text-[10px] text-gray-500 block mb-1">Capa</label>
+                                ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem capa</div>'}
+                                <input name="capa" type="file" accept="image/*" class="w-full text-[10px]">
+                            </div>
+                            ${tipo !== 'canal' ? `
+                            <div>
+                                <label class="text-[10px] text-gray-500 block mb-1">Banner</label>
+                                ${it.banner ? `<img src="${esc(it.banner)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem banner</div>'}
+                                <input name="banner" type="file" accept="image/*" class="w-full text-[10px]">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-gray-500 block mb-1">Logo</label>
+                                <div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center p-2">
+                                    ${it.logo ? `<img src="${esc(it.logo)}" class="max-w-full max-h-full object-contain">` : '<span class="text-gray-600 text-[10px]">sem logo</span>'}
+                                </div>
+                                <input name="logo" type="file" accept="image/*" class="w-full text-[10px]">
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="flex gap-2 pt-2">
+                        <button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button>
+                        <button type="submit" id="btn-salvar" class="flex-1 h-10 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
+                            <i class="fa-solid fa-floppy-disk"></i> Salvar
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>`;
+    },
+
+    async salvar(ev, tipo, id) {
+        ev.preventDefault();
+        const form = ev.target;
+        const fd = new FormData();
+        ['titulo','ano','categoria','sinopse','url'].forEach(k => {
+            const el = form.querySelector(`[name="${k}"]`);
+            if (el && el.value) fd.append(k, el.value);
+        });
+        ['capa','banner','logo'].forEach(k => {
+            const el = form.querySelector(`[name="${k}"]`);
+            if (el && el.files[0]) fd.append(k, el.files[0]);
+        });
+        const btn = document.getElementById('btn-salvar');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Salvando...';
+        try {
+            const endpoint = tipo === 'filme' ? `/admin/filme/${id}`
+                          : tipo === 'serie' ? `/admin/serie/${id}`
+                          : `/admin/canal/${id}`;
+            const r = await fetch(API + endpoint, { method: 'PUT', body: fd });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const d = await r.json();
+            Toast.show(`✅ "${d.titulo}" salvo!`, 'success');
+            Views.fecharModal();
+        } catch (e) {
+            Toast.show('Erro: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Salvar';
+        }
+    },
+
+    fecharModal() { document.getElementById('modal-root').innerHTML = ''; },
+
+    async novidades(c) {
+        const data = await Api.novidades().catch(() => ({ disponivel: false }));
+        if (!data.disponivel) {
+            c.innerHTML = `<div class="text-center py-16 text-gray-500">Nenhuma detecção ainda.</div>`;
+            return;
+        }
+        const t = data.totais || {};
+        c.innerHTML = `
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                ${this.statCard('Filmes novos', fmt(t.filmes_novos), 'fa-film', 'text-blue-400')}
+                ${this.statCard('Séries novas', fmt(t.series_novas), 'fa-tv', 'text-purple-400')}
+                ${this.statCard('Canais novos', fmt(t.canais_novos), 'fa-satellite-dish', 'text-green-400')}
+                ${this.statCard('Lançamentos', fmt(t.lancamentos), 'fa-star', 'text-yellow-400')}
+            </div>
+            <div class="text-xs text-gray-500">
+                <i class="fa-solid fa-clock mr-1"></i> Detectado em ${esc(data.detectado_em_str || '—')}
+            </div>
+        `;
+    },
+
+    async proxy(c) {
+        const p = await Api.proxyStats().catch(() => ({}));
+        c.innerHTML = `
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                ${this.statCard('Slugs', fmt(p.slugs_carregados), 'fa-link', 'text-blue-400')}
+                ${this.statCard('Streams ativos', fmt(p.ativo_total), 'fa-play', 'text-green-400')}
+                ${this.statCard('Limite global', fmt(p.limite_total), 'fa-gauge', 'text-yellow-400')}
+                ${this.statCard('IPs', fmt(p.ips_conectados), 'fa-network-wired', 'text-purple-400')}
+            </div>
+        `;
+    },
+
+    async sistema(c) {
+        const s = await Api.status().catch(() => ({}));
+        c.innerHTML = `
+            <div class="stat-card rounded-xl p-4">
+                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">Estado</div>
+                <div class="space-y-2 text-xs">
+                    <div class="flex justify-between"><span class="text-gray-500">Cache M3U</span><span>${s.valid ? '✅ Válido' : '⚠️ Expirado'}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">Auto-refresh</span><span>${s.auto_refresh_ativo ? '✅ Ativo' : '❌ Parado'}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">TMDB</span><span>${s.tmdb_ativo ? '✅ Ativo' : '❌ Off'}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">Clientes WS</span><span>${s.ws_clientes || 0}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">URL pública</span><span class="font-mono text-[10px]">${esc(s.public_base_url || '—')}</span></div>
+                </div>
+            </div>
+        `;
+    }
+};
+
+const Actions = {
+    async refresh() {
+        Toast.show('⏳ Atualizando catálogo...', 'info');
+        try {
+            const r = await Api.refresh();
+            Toast.show(`✅ ${r.stats.total_filmes} filmes, ${r.stats.total_series} séries`, 'success', 5000);
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+    async novidades() {
+        Toast.show('⏳ Verificando novidades...', 'info');
+        try {
+            const r = await Api.verificarNovidades();
+            Toast.show(`🎉 ${r.totais.lancamentos} lançamentos`, 'success', 5000);
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+};
+
+function manualRefresh() { Router.render(); }
+
+async function pollStatus() {
+    try {
+        const s = await Api.status();
+        document.getElementById('status-dot').className = 'w-2 h-2 rounded-full bg-green-400';
+        document.getElementById('status-label').textContent = `${s.stats.total_filmes} filmes`;
+        const el = document.getElementById('ws-clientes');
+        if (el) el.textContent = s.ws_clientes || 0;
+    } catch {
+        document.getElementById('status-dot').className = 'w-2 h-2 rounded-full bg-red-500';
+        document.getElementById('status-label').textContent = 'Offline';
+    }
+}
+
+window.addEventListener('hashchange', () => Router.handle());
+window.addEventListener('DOMContentLoaded', () => {
+    if (!window.location.hash) window.location.hash = '#dashboard';
+    else Router.handle();
+    conectarWS();
+    pollStatus();
+    setInterval(pollStatus, 15000);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') Views.fecharModal(); });
+});
+</script>
+
+</body>
+</html>

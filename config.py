@@ -59,7 +59,7 @@ TMDB_MAX_PER_CYCLE = int(os.getenv("TMDB_MAX_PER_CYCLE", "30"))
 
 
 # ==========================================================
-# Fanart.tv (logos alternativos)
+# Fanart.tv
 # ==========================================================
 FANART_API_KEY  = os.getenv("FANART_API_KEY", "").strip()
 FANART_ENABLED  = bool(FANART_API_KEY)
@@ -90,7 +90,7 @@ MAX_PAGE_SIZE     = 200
 
 
 # ==========================================================
-# Cache (APENAS os 3 JSONs do catálogo)
+# Cache
 # ==========================================================
 CACHE_DIR = BASE_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
@@ -101,4 +101,21 @@ CANAIS_FILE = CACHE_DIR / "canais.json"
 
 META_FILE      = CACHE_DIR / "meta.json"
 NOVIDADES_FILE = CACHE_DIR / "novidades.json"
-SLUG_MAP_FILE  = CACHE_DIR / "slug_map.json"
+
+# ==========================================================
+# Slug maps — separados por tipo
+# ==========================================================
+SLUG_MAP_FILE          = CACHE_DIR / "slug_map.json"            # legado (não usado)
+SLUG_MAP_FILMES_FILE   = CACHE_DIR / "slug_map_filmes.json"
+SLUG_MAP_SERIES_FILE   = CACHE_DIR / "slug_map_series.json"
+SLUG_MAP_CANAIS_FILE   = CACHE_DIR / "slug_map_canais.json"
+
+
+# ==========================================================
+# Uploads (painel admin)
+# ==========================================================
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+(UPLOAD_DIR / "capas").mkdir(exist_ok=True)
+(UPLOAD_DIR / "banners").mkdir(exist_ok=True)
+(UPLOAD_DIR / "logos").mkdir(exist_ok=True)

@@ -2,3 +2,5 @@ fastapi
 uvicorn
 httpx
 aiofiles
+sqlalchemy
+python-multipart

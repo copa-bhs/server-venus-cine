@@ -4,7 +4,7 @@ Proxy reverso de streaming para o provedor IPTV.
 - Suporta Range requests (seek em vídeo)
 - Limita streams simultâneos (global + por IP)
 - Streaming bidirecional chunk-a-chunk (não carrega vídeo em memória)
-- CORS explícito nos headers de resposta (para WebView/navegador)
+- Slug maps separados por tipo (filmes / series / canais)
 """
 import asyncio
 import json
@@ -16,7 +16,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from config import (
-    USER_AGENT, SLUG_MAP_FILE,
+    USER_AGENT,
+    SLUG_MAP_FILMES_FILE, SLUG_MAP_SERIES_FILE, SLUG_MAP_CANAIS_FILE,
     PROXY_ENABLED, PROXY_MAX_CONCURRENT, PROXY_MAX_PER_IP,
     PROXY_CHUNK_SIZE, PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT,
 )
@@ -60,46 +61,58 @@ def slugify(texto: str, ano=None) -> str:
 
 
 # ==========================================================
-# MAPA slug -> item
+# MAPAS EM MEMÓRIA
 # ==========================================================
 _SLUG_MAP: dict = {}
-_ID_MAP: dict = {}
+_ID_MAP: dict   = {}
+
+_SLUG_MAP_FILMES: dict = {}
+_SLUG_MAP_SERIES: dict = {}
+_SLUG_MAP_CANAIS: dict = {}
 
 
 def build_slug_map(index: dict) -> dict:
     global _SLUG_MAP, _ID_MAP
-    smap = {}
+    global _SLUG_MAP_FILMES, _SLUG_MAP_SERIES, _SLUG_MAP_CANAIS
+
+    smap_filmes = {}
+    smap_series = {}
+    smap_canais = {}
     imap = {}
 
-    def _add(slug: str, dados: dict):
+    def _add(target: dict, slug: str, dados: dict):
         if not slug:
             return
+        # Colisão entre tipos → adiciona sufixo numérico
         base = slug
         i = 2
-        while slug in smap:
+        while (slug in smap_filmes or slug in smap_series or slug in smap_canais):
             slug = f"{base}-{i}"
             i += 1
-        smap[slug] = dados
+        target[slug] = dados
         imap[str(dados.get("id"))] = dados
 
-    # Filmes
+    # ---------- FILMES ----------
     for f in index.get("filmes", []):
         if not f.get("url"):
             continue
         slug = slugify(f.get("titulo") or "", f.get("ano"))
-        _add(slug, {
+        dados = {
             "id": f.get("id"),
             "url": f.get("url"),
             "titulo": f.get("titulo"),
             "tipo": "filme",
             "slug": slug,
-        })
+        }
+        _add(smap_filmes, slug, dados)
 
-    # Séries (episódios)
+    # ---------- SÉRIES ----------
     for s in index.get("series", []):
         titulo_base = slugify(s.get("titulo") or "")
         if not titulo_base:
             continue
+
+        # Episódios (se já estiverem no JSON — normalmente só após Opção B)
         for ep in s.get("episodios", []):
             t = ep.get("temporada")
             e = ep.get("episodio")
@@ -111,38 +124,70 @@ def build_slug_map(index: dict) -> dict:
             except Exception:
                 continue
             slug = f"{titulo_base}-t{t_int:02d}-e{e_int:02d}"
-            _add(slug, {
+            dados = {
                 "id": ep.get("id"),
                 "url": ep.get("url"),
                 "titulo": f"{s.get('titulo')} T{t_int:02d}E{e_int:02d}",
                 "tipo": "serie",
                 "slug": slug,
-            })
+            }
+            _add(smap_series, slug, dados)
 
-    # Canais
+        # Salva SEMPRE o slug base da série (mesmo sem URL)
+        # URL vazia → usado apenas pra lookup, o episódio é resolvido sob demanda
+        dados_base = {
+            "id": s.get("id"),
+            "url": s.get("url") or "",     # pode ser vazio
+            "titulo": s.get("titulo"),
+            "tipo": "serie",
+            "slug": titulo_base,
+        }
+        _add(smap_series, titulo_base, dados_base)
+
+    # ---------- CANAIS ----------
     for c in index.get("canais", []):
         if not c.get("url"):
             continue
         slug = slugify(c.get("titulo") or "")
-        _add(slug, {
+        dados = {
             "id": c.get("id"),
             "url": c.get("url"),
             "titulo": c.get("titulo"),
             "tipo": "canal",
             "slug": slug,
-        })
+        }
+        _add(smap_canais, slug, dados)
 
-    _SLUG_MAP = smap
+    # ---------- Consolidado em memória ----------
+    smap_total = {}
+    smap_total.update(smap_filmes)
+    smap_total.update(smap_series)
+    smap_total.update(smap_canais)
+
+    _SLUG_MAP = smap_total
     _ID_MAP = imap
+    _SLUG_MAP_FILMES = smap_filmes
+    _SLUG_MAP_SERIES = smap_series
+    _SLUG_MAP_CANAIS = smap_canais
 
-    try:
-        SLUG_MAP_FILE.write_text(
-            json.dumps(smap, ensure_ascii=False), encoding="utf-8"
-        )
-    except Exception:
-        pass
+    # ---------- Salva 3 arquivos ----------
+    def _salvar(path, dados):
+        try:
+            path.write_text(
+                json.dumps(dados, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"[Proxy] Erro ao salvar {path.name}: {e}")
 
-    return smap
+    _salvar(SLUG_MAP_FILMES_FILE, smap_filmes)
+    _salvar(SLUG_MAP_SERIES_FILE, smap_series)
+    _salvar(SLUG_MAP_CANAIS_FILE, smap_canais)
+
+    print(f"[Proxy] Slugs: {len(smap_filmes)} filmes · "
+          f"{len(smap_series)} séries · {len(smap_canais)} canais")
+
+    return smap_total
 
 
 def get_by_slug(slug: str) -> dict | None:
@@ -157,8 +202,16 @@ def total_slugs() -> int:
     return len(_SLUG_MAP)
 
 
+def total_slugs_por_tipo() -> dict:
+    return {
+        "filmes": len(_SLUG_MAP_FILMES),
+        "series": len(_SLUG_MAP_SERIES),
+        "canais": len(_SLUG_MAP_CANAIS),
+        "total": len(_SLUG_MAP),
+    }
+
+
 def slug_for(item: dict, tipo: str | None = None) -> str:
-    """Gera o slug correto pra um item do índice."""
     titulo = item.get("titulo") or ""
     ano = item.get("ano")
     t = tipo or item.get("tipo") or ""
@@ -176,10 +229,9 @@ def slug_for(item: dict, tipo: str | None = None) -> str:
 
 
 # ==========================================================
-# REGISTRO DINÂMICO (NOVO)
+# REGISTRO DINÂMICO (usado por info.py)
 # ==========================================================
 def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = None):
-    """Registra um item dinamicamente no mapa do proxy."""
     global _ID_MAP, _SLUG_MAP
     if not item_id or not url:
         return
@@ -188,7 +240,7 @@ def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = No
         "url": url,
         "titulo": titulo,
         "tipo": tipo,
-        "slug": slug or slugify(titulo)
+        "slug": slug or slugify(titulo),
     }
     _ID_MAP[str(item_id)] = dados
     if slug:
@@ -205,16 +257,18 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
     if not PROXY_ENABLED:
         raise HTTPException(404, "Proxy desativado.")
 
+    # Se a URL for vazia (série sem episódios resolvidos), recusa
+    if not url or not url.strip():
+        raise HTTPException(404, "Item sem URL de stream. Abra a série primeiro.")
+
     client_ip = request.client.host if request.client else "unknown"
 
-    # Limite global
     if _active_total >= PROXY_MAX_CONCURRENT:
         raise HTTPException(
             503,
             "Servidor no limite de streams. Tente novamente em alguns segundos."
         )
 
-    # Limite por IP
     if _active_by_ip.get(client_ip, 0) >= PROXY_MAX_PER_IP:
         raise HTTPException(
             429,
@@ -222,18 +276,12 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
             "simultâneos. Feche algum player e tente de novo."
         )
 
-    # ==========================================================
-    # HEADERS REPASSADOS PARA O PROVEDOR
-    # ==========================================================
     headers = {"User-Agent": USER_AGENT}
     if "range" in request.headers:
         headers["Range"] = request.headers["range"]
     if "if-modified-since" in request.headers:
         headers["If-Modified-Since"] = request.headers["if-modified-since"]
 
-    # ==========================================================
-    # CLIENT HTTP DEDICADO POR STREAM
-    # ==========================================================
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(
             connect=PROXY_CONNECT_TIMEOUT,
@@ -263,13 +311,9 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
         await client.aclose()
         raise HTTPException(status, "Provedor recusou a requisição do stream.")
 
-    # Registra o stream ativo
     _active_total += 1
     _active_by_ip[client_ip] = _active_by_ip.get(client_ip, 0) + 1
 
-    # ==========================================================
-    # STREAMER (chunk-a-chunk, sem carregar em memória)
-    # ==========================================================
     async def _streamer():
         global _active_total
         try:
@@ -294,9 +338,6 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
             except Exception:
                 pass
 
-    # ==========================================================
-    # HEADERS DA RESPOSTA (repassados do upstream)
-    # ==========================================================
     resp_headers = {}
     for h in (
         "content-type",
@@ -309,13 +350,9 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
         if h in upstream.headers:
             resp_headers[h] = upstream.headers[h]
 
-    # Garante Accept-Ranges: bytes (essencial pro player fazer seek)
     resp_headers.setdefault("accept-ranges", "bytes")
     resp_headers["cache-control"] = "no-store"
 
-    # ==========================================================
-    # CORS EXPLÍCITO (evita bloqueio em WebView/navegador)
-    # ==========================================================
     resp_headers["Access-Control-Allow-Origin"] = "*"
     resp_headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
     resp_headers["Access-Control-Allow-Headers"] = "Range, Content-Type, Origin"
@@ -327,7 +364,7 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
 
     return StreamingResponse(
         _streamer(),
-        status_code=upstream.status_code,  # 200 ou 206 (Partial Content)
+        status_code=upstream.status_code,
         headers=resp_headers,
         media_type=media_type,
     )
