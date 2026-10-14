@@ -308,8 +308,9 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
             if slug_base:
                 url_stream = f"{base}/stream/{slug_base}.mp4" if base else f"/stream/{slug_base}.mp4"
 
+            # ⚠️ Usa o ID do IPTV (não o pk do banco)
             return {
-                "id": item.get("id"),
+                "id": str(item.get("id")),   # ID do IPTV
                 "tipo": tipo,
                 "titulo": item.get("titulo"),
                 "banner": banner or item.get("capa"),
@@ -333,7 +334,7 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
 async def _hero_manual_do_banco() -> list:
     """
     Lê slides manuais do banco e enriquece com dados do TMDB.
-    Se o TMDB falhar, usa os dados básicos do banco.
+    Usa o iptv_id como 'id' (é o que o app precisa pra buscar detalhes).
     """
     try:
         from db import SessionLocal, Slide as SlideDB, Filme as FilmeDB, Serie as SerieDB
@@ -357,6 +358,11 @@ async def _hero_manual_do_banco() -> list:
                 if not ref:
                     continue
 
+                # ⚠️ CRUCIAL: usa o iptv_id, não o pk
+                iptv_id = getattr(ref, "iptv_id", None) or str(ref.id)
+                if not iptv_id:
+                    continue
+
                 # Enriquecer com dados do TMDB
                 dados_tmdb = None
                 try:
@@ -372,7 +378,7 @@ async def _hero_manual_do_banco() -> list:
                 url_stream = f"{base}/stream/{slug_base}.mp4" if base else f"/stream/{slug_base}.mp4"
 
                 hero.append({
-                    "id": ref.id,
+                    "id": str(iptv_id),           # ⚠️ ID DO IPTV
                     "tipo": "filme" if s.ref_tipo == "filme" else "serie",
                     "titulo": s.titulo or ref.titulo,
                     "banner": s.banner or (dados_tmdb.get("banner_4k") if dados_tmdb else None) or getattr(ref, "banner", None) or ref.capa,
