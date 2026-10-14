@@ -330,8 +330,11 @@ async def _montar_hero_async(filmes: list, series: list, n: int = 5) -> list:
     return [r for r in resultados if r]
 
 
-def _hero_manual_do_banco() -> list:
-    """Lê slides manuais do banco. Retorna lista vazia se não tem."""
+async def _hero_manual_do_banco() -> list:
+    """
+    Lê slides manuais do banco e enriquece com dados do TMDB.
+    Se o TMDB falhar, usa os dados básicos do banco.
+    """
     try:
         from db import SessionLocal, Slide as SlideDB, Filme as FilmeDB, Serie as SerieDB
         db = SessionLocal()
@@ -354,6 +357,16 @@ def _hero_manual_do_banco() -> list:
                 if not ref:
                     continue
 
+                # Enriquecer com dados do TMDB
+                dados_tmdb = None
+                try:
+                    if s.ref_tipo == "filme":
+                        dados_tmdb = await tmdb.buscar_filme(ref.titulo, ref.ano)
+                    else:
+                        dados_tmdb = await tmdb.buscar_serie(ref.titulo, ref.ano)
+                except Exception as e:
+                    print(f"[Hero] Falha ao enriquecer '{ref.titulo}': {e}")
+
                 slug_base = _slugify(ref.titulo or "", ref.ano)
                 base = (PUBLIC_BASE_URL or "").rstrip("/")
                 url_stream = f"{base}/stream/{slug_base}.mp4" if base else f"/stream/{slug_base}.mp4"
@@ -362,19 +375,19 @@ def _hero_manual_do_banco() -> list:
                     "id": ref.id,
                     "tipo": "filme" if s.ref_tipo == "filme" else "serie",
                     "titulo": s.titulo or ref.titulo,
-                    "banner": s.banner or getattr(ref, "banner", None) or ref.capa,
-                    "capa": ref.capa,
-                    "logo": s.logo or getattr(ref, "logo", None),
-                    "sinopse": s.sinopse or getattr(ref, "sinopse", None),
-                    "score": None,
-                    "classificacao": None,
-                    "ano": ref.ano,
-                    "generos": [],
-                    "trailer_url": None,
+                    "banner": s.banner or (dados_tmdb.get("banner_4k") if dados_tmdb else None) or getattr(ref, "banner", None) or ref.capa,
+                    "capa": (dados_tmdb.get("capa") if dados_tmdb else None) or ref.capa,
+                    "logo": s.logo or (dados_tmdb.get("logo") if dados_tmdb else None) or getattr(ref, "logo", None),
+                    "sinopse": s.sinopse or (dados_tmdb.get("sinopse") if dados_tmdb else None) or getattr(ref, "sinopse", None),
+                    "score": dados_tmdb.get("score") if dados_tmdb else None,
+                    "classificacao": dados_tmdb.get("classificacao") if dados_tmdb else None,
+                    "ano": (dados_tmdb.get("ano") if dados_tmdb else None) or ref.ano,
+                    "generos": (dados_tmdb.get("generos") if dados_tmdb else None) or [],
+                    "trailer_url": dados_tmdb.get("trailer_url") if dados_tmdb else None,
                     "url_stream": url_stream,
                     "manual": True,
                 })
-            print(f"[Hero] Usando {len(hero)} slides manuais do banco")
+            print(f"[Hero] Usando {len(hero)} slides manuais do banco (enriquecidos)")
             return hero
         finally:
             db.close()
@@ -384,7 +397,7 @@ def _hero_manual_do_banco() -> list:
 
 
 async def get_hero(filmes: list, series: list, n: int = 5, force: bool = False) -> list:
-    manual = _hero_manual_do_banco()
+    manual = await _hero_manual_do_banco()
     if manual:
         return manual
 
