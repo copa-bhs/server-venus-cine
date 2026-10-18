@@ -19,10 +19,10 @@
     .stat-card { background: linear-gradient(135deg, #141414 0%, #0f0f0f 100%); border: 1px solid #262626; }
     .toast-slide { animation: slideIn .3s ease; }
     @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    .input-dark { width: 100%; height: 40px; padding: 0 12px; background: #0a0a0a; border: 1px solid #262626; border-radius: 8px; color: #fff; font-size: 14px; outline: none; }
+    .input-dark { width: 100%; height: 40px; padding: 0 12px; background: #0a0a0a; border: 1px solid #262626; border-radius: 8px; color: #fff; font-size: 14px; outline: none; transition: 0.2s; }
     .input-dark:focus { border-color: #E50914; }
     textarea.input-dark { height: auto; padding: 10px 12px; resize: vertical; }
-    .template-btn { padding: 10px; border-radius: 8px; background: #1a1a1a; border: 1px solid #333; font-size: 12px; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; align-items: center; gap: 4px; color: #ccc; }
+    .template-btn { padding: 12px 10px; border-radius: 8px; background: #1a1a1a; border: 1px solid #333; font-size: 12px; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; align-items: center; gap: 6px; color: #ccc; }
     .template-btn:hover { border-color: #E50914; color: #fff; background: #222; }
     .template-btn.active { background: rgba(229,9,20,0.1); border-color: #E50914; color: #E50914; }
 </style>
@@ -292,13 +292,13 @@ const Views = {
                     <div class="stat-card rounded-xl p-4">
                         <div class="text-xs font-semibold text-gray-400 uppercase mb-3"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Modelos Rápidos</div>
                         <div class="grid grid-cols-3 gap-2">
-                            <div class="template-btn active" onclick="Views._notifTemplate('geral', this)">
+                            <div class="template-btn active" id="btn-tpl-geral" onclick="Views._notifTemplate('geral')">
                                 <i class="fa-solid fa-bullhorn text-lg"></i> Aviso Geral
                             </div>
-                            <div class="template-btn" onclick="Views._notifTemplate('plano', this)">
+                            <div class="template-btn" id="btn-tpl-plano" onclick="Views._notifTemplate('plano')">
                                 <i class="fa-solid fa-crown text-lg"></i> Novo Plano
                             </div>
-                            <div class="template-btn" onclick="Views._notifTemplate('lancamento', this)">
+                            <div class="template-btn" id="btn-tpl-lancamento" onclick="Views._notifTemplate('lancamento')">
                                 <i class="fa-solid fa-film text-lg"></i> Lançamento
                             </div>
                         </div>
@@ -310,7 +310,7 @@ const Views = {
                             
                             <!-- Área exclusiva para buscar filme se for lançamento -->
                             <div id="notif-busca-area" class="hidden bg-[#0a0a0a] border border-[#262626] rounded-lg p-3">
-                                <label class="text-[10px] text-gray-500 block mb-1">Puxar dados do catálogo (Opcional)</label>
+                                <label class="text-[10px] text-red-400 font-bold block mb-1">🔍 Puxar dados do catálogo (Opcional)</label>
                                 <div class="flex gap-2">
                                     <select id="notif-busca-tipo" class="input-dark w-24 text-xs">
                                         <option value="filme">Filme</option>
@@ -324,13 +324,15 @@ const Views = {
 
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Título *</label>
-                                <input id="notif-title" class="input-dark" required placeholder="Ex: Novo Filme Adicionado!">
+                                <input id="notif-title" class="input-dark" required placeholder="Digite o título da notificação...">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
-                                <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Confira agora o mais novo lançamento..."></textarea>
+                                <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Digite a mensagem..."></textarea>
                             </div>
-                            <div>
+                            
+                            <!-- URL da Imagem só aparece no Lançamento -->
+                            <div id="notif-image-area" class="hidden">
                                 <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
                                 <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
                             </div>
@@ -344,7 +346,7 @@ const Views = {
                                     </select>
                                 </div>
                                 <div>
-                                    <label class="text-xs text-gray-400 block mb-1">Tipo Base</label>
+                                    <label class="text-xs text-gray-400 block mb-1">Tipo Base (App)</label>
                                     <select id="notif-type" class="input-dark">
                                         <option value="geral">Geral</option>
                                         <option value="lancamento">Lançamento</option>
@@ -421,40 +423,48 @@ const Views = {
                 icon.classList.remove('hidden');
             }
         };
+        
+        // Inicia com o template Geral
+        this._notifTemplate('geral');
     },
 
-    _notifTemplate(tipo, el) {
+    _notifTemplate(tipo) {
         document.querySelectorAll('.template-btn').forEach(b => b.classList.remove('active'));
-        el.classList.add('active');
+        document.getElementById('btn-tpl-' + tipo).classList.add('active');
         
         const buscaArea = document.getElementById('notif-busca-area');
+        const imgArea = document.getElementById('notif-image-area');
         const title = document.getElementById('notif-title');
         const body = document.getElementById('notif-body');
         const img = document.getElementById('notif-image');
         const type = document.getElementById('notif-type');
 
+        // Limpa os campos ao trocar de modelo
+        title.value = '';
+        body.value = '';
+        img.value = '';
+        img.dispatchEvent(new Event('input'));
+
         if (tipo === 'lancamento') {
             buscaArea.classList.remove('hidden');
-            title.value = '🎬 Novo Lançamento!';
-            body.value = 'Acabou de chegar no catálogo. Confira agora!';
+            imgArea.classList.remove('hidden');
+            title.placeholder = 'Ex: 🎬 Chegou: Vingadores';
+            body.placeholder = 'O sucesso Vingadores já está disponível no catálogo.';
             type.value = 'lancamento';
         } else if (tipo === 'plano') {
             buscaArea.classList.add('hidden');
-            title.value = '👑 Novos Planos Disponíveis';
-            body.value = 'Assine o plano Premium e assista em 4K sem anúncios!';
+            imgArea.classList.add('hidden');
+            title.placeholder = 'Ex: 👑 Novo Plano Premium';
+            body.placeholder = 'Assine agora o plano Premium e assista em 4K sem anúncios!';
             type.value = 'geral';
-        } else {
+        } else { // geral
             buscaArea.classList.add('hidden');
-            title.value = '';
-            body.value = '';
+            imgArea.classList.add('hidden');
+            title.placeholder = 'Ex: 📢 Manutenção Programada';
+            body.placeholder = 'Informamos que o sistema passará por uma breve manutenção.';
             type.value = 'geral';
         }
         
-        // Limpa imagem se mudou de template
-        if (tipo !== 'lancamento') {
-            img.value = '';
-            img.dispatchEvent(new Event('input'));
-        }
         title.dispatchEvent(new Event('input'));
         body.dispatchEvent(new Event('input'));
     },
