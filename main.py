@@ -1,8 +1,8 @@
 import asyncio
 import json
-import re
 import secrets
 import time
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -38,7 +38,10 @@ from db import (
 )
 from websocket_manager import manager
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.1.0")
+# ⚠️ IMPORTAÇÃO DO NOVO ROUTER DE NOTIFICAÇÕES
+from notificacoes import router as notificacoes_router
+
+app = FastAPI(title="IPTV Organizer Pro", version="9.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,6 +52,9 @@ app.add_middleware(
     expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
     max_age=3600,
 )
+
+# ⚠️ REGISTRO DO ROUTER DE NOTIFICAÇÕES
+app.include_router(notificacoes_router)
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 for sub in ("capas", "banners", "logos"):
@@ -303,7 +309,7 @@ def root():
     idx = BASE_DIR / "index.html"
     if idx.exists():
         return FileResponse(idx)
-    return {"service": "IPTV Organizer Pro", "version": "9.1.0"}
+    return {"service": "IPTV Organizer Pro", "version": "9.2.0"}
 
 
 # ==========================================================
@@ -764,31 +770,25 @@ async def _resolver_episodio_sob_demanda(slug: str):
     m = _EPISODIO_RE.match(slug)
     if not m:
         return None
-
     base = m.group(1)
     print(f"[Proxy] Episódio '{slug}' não está no mapa. Buscando série base '{base}'...")
-
     serie_encontrada = None
     for s in _SERIES:
         if _slugify(s.get("titulo") or "") == base:
             serie_encontrada = s
             break
-
     if not serie_encontrada:
         print(f"[Proxy] Nenhuma série corresponde a '{base}'")
         return None
-
     serie_id = str(serie_encontrada.get("id") or "")
     if not serie_id:
         return None
-
     try:
         print(f"[Proxy] Carregando episódios da série {serie_id} ({serie_encontrada.get('titulo')})...")
         await fetch_series_info(serie_id)
     except Exception as e:
         print(f"[Proxy] Falha ao buscar série {serie_id}: {e}")
         return None
-
     item = get_by_slug(slug)
     if item:
         print(f"[Proxy] ✓ Episódio resolvido: {slug}")
@@ -820,12 +820,9 @@ async def proxy_por_slug(slug_path: str, request: Request):
         if slug.lower().endswith(ext):
             slug = slug[:-len(ext)]
             break
-
     item = get_by_slug(slug)
-
     if not item:
         item = await _resolver_episodio_sob_demanda(slug)
-
     if not item:
         raise HTTPException(404, "Slug não encontrado.")
     return await stream_proxy(item["url"], request)

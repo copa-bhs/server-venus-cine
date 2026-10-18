@@ -4,3 +4,5 @@ httpx
 aiofiles
 sqlalchemy
 python-multipart
+websockets
+firebase-admin

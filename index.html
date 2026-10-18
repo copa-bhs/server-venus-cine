@@ -40,6 +40,7 @@
 
         <nav class="flex-1 py-3 overflow-y-auto">
             <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
+            <a href="#notificacoes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="notificacoes"><i class="fa-solid fa-bell w-4 text-center"></i> Notificações</a>
             <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
             <a href="#filmes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="filmes"><i class="fa-solid fa-film w-4 text-center"></i> Filmes</a>
             <a href="#series" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="series"><i class="fa-solid fa-tv w-4 text-center"></i> Séries</a>
@@ -176,8 +177,13 @@ const Api = {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return await r.json();
     },
-    async post(path) {
-        const r = await fetch(API + path, { method: 'POST' });
+    async post(path, body = null) {
+        const opts = { method: 'POST' };
+        if (body) {
+            opts.headers = { 'Content-Type': 'application/json' };
+            opts.body = JSON.stringify(body);
+        }
+        const r = await fetch(API + path, opts);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return await r.json();
     },
@@ -190,6 +196,10 @@ const Api = {
     adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
+    
+    // NOVOS ENDPOINTS DE NOTIFICAÇÃO
+    notifHistorico() { return this.get('/admin/notificacoes/historico'); },
+    notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -213,8 +223,8 @@ const Router = {
             a.classList.toggle('active', a.dataset.route === h);
         });
         const titles = {
-            dashboard: 'Dashboard', slider: 'Slider (Hero)',
-            filmes: 'Filmes', series: 'Séries', canais: 'Canais',
+            dashboard: 'Dashboard', notificacoes: 'Notificações Push',
+            slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
             novidades: 'Novidades', proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
         document.getElementById('page-title').textContent = titles[h] || h;
@@ -229,6 +239,7 @@ const Router = {
         c.innerHTML = `<div class="flex items-center justify-center h-64 text-gray-500"><i class="fa-solid fa-circle-notch fa-spin text-2xl"></i></div>`;
         try {
             if (this.current === 'dashboard') await Views.dashboard(c);
+            else if (this.current === 'notificacoes') await Views.notificacoes(c);
             else if (this.current === 'slider') await Views.slider(c);
             else if (this.current === 'filmes') await Views.list(c, 'filme');
             else if (this.current === 'series') await Views.list(c, 'serie');
@@ -277,18 +288,140 @@ const Views = {
                     <div class="text-[11px] text-gray-500 mt-1">conectados agora</div>
                 </div>
             </div>
-            <div class="stat-card rounded-xl p-4">
-                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">Ações</div>
-                <div class="flex flex-wrap gap-2">
-                    <button onclick="Actions.refresh()" class="h-9 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-medium flex items-center gap-2">
-                        <i class="fa-solid fa-rotate"></i> Refresh M3U
-                    </button>
-                    <button onclick="Actions.novidades()" class="h-9 px-4 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs font-medium flex items-center gap-2">
-                        <i class="fa-solid fa-sparkles"></i> Verificar novidades
-                    </button>
+        `;
+    },
+
+    // ============================================================
+    // NOTIFICAÇÕES
+    // ============================================================
+    async notificacoes(c) {
+        c.innerHTML = `
+            <div class="grid md:grid-cols-2 gap-6">
+                <!-- Formulário -->
+                <div class="stat-card rounded-xl p-5">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-4"><i class="fa-solid fa-paper-plane mr-1"></i> Disparar Notificação</div>
+                    <form onsubmit="Views._enviarNotif(event)" class="space-y-4">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Título da Notificação *</label>
+                            <input id="notif-title" class="input-dark" required placeholder="Ex: Novo Filme Adicionado!">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
+                            <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Confira agora o mais novo lançamento..."></textarea>
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
+                            <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Tipo</label>
+                                <select id="notif-type" class="input-dark">
+                                    <option value="geral">Geral (Aviso)</option>
+                                    <option value="lancamento">Lançamento</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
+                                <select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')">
+                                    <option value="all">Todos os usuários</option>
+                                    <option value="specific">Usuário específico</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="notif-uid-area" class="hidden">
+                            <label class="text-xs text-gray-400 block mb-1">UID do Usuário</label>
+                            <input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase">
+                        </div>
+                        
+                        <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-rocket"></i> Disparar Notificação
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Histórico -->
+                <div class="stat-card rounded-xl p-5 flex flex-col h-[600px]">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center">
+                        <span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico de Envios</span>
+                        <button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button>
+                    </div>
+                    <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2">
+                        <div class="text-center text-gray-500 text-xs py-4">Carregando...</div>
+                    </div>
                 </div>
             </div>
         `;
+        this._carregarHistoricoNotif();
+    },
+
+    async _enviarNotif(ev) {
+        ev.preventDefault();
+        const btn = document.getElementById('btn-notif');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
+
+        const payload = {
+            title: document.getElementById('notif-title').value,
+            body: document.getElementById('notif-body').value,
+            imageUrl: document.getElementById('notif-image').value,
+            type: document.getElementById('notif-type').value,
+            target: document.getElementById('notif-target').value,
+            uid: document.getElementById('notif-uid').value || null
+        };
+
+        try {
+            const r = await Api.notifEnviar(payload);
+            if (!r.ok) throw new Error(r.msg || 'Erro ao enviar');
+            Toast.show(`✅ ${r.msg}`, 'success', 5000);
+            document.getElementById('notif-title').value = '';
+            document.getElementById('notif-body').value = '';
+            document.getElementById('notif-image').value = '';
+            this._carregarHistoricoNotif();
+        } catch (e) {
+            Toast.show(`❌ Erro: ${e.message}`, 'error', 5000);
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-rocket"></i> Disparar Notificação';
+    },
+
+    async _carregarHistoricoNotif() {
+        const box = document.getElementById('notif-historico');
+        try {
+            const r = await Api.notifHistorico();
+            if (!r.items || r.items.length === 0) {
+                box.innerHTML = `<div class="text-center text-gray-500 text-xs py-4">Nenhuma notificação enviada ainda.</div>`;
+                return;
+            }
+            box.innerHTML = r.items.map(n => {
+                let dataFormatada = 'Data desconhecida';
+                if (n.createdAt) {
+                    try {
+                        const dt = new Date(n.createdAt);
+                        dataFormatada = dt.toLocaleString('pt-BR');
+                    } catch {}
+                }
+                
+                const tipoBadge = n.type === 'lancamento' 
+                    ? `<span class="text-[9px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold">LANÇAMENTO</span>`
+                    : `<span class="text-[9px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">GERAL</span>`;
+
+                return `
+                    <div class="bg-[#0a0a0a] border border-[#262626] rounded-lg p-3 relative">
+                        <div class="flex items-center gap-2 mb-1">
+                            ${tipoBadge}
+                            <span class="text-[10px] text-gray-500 ml-auto">${dataFormatada}</span>
+                        </div>
+                        <div class="text-sm font-bold text-gray-200">${esc(n.title)}</div>
+                        <div class="text-xs text-gray-400 mt-1 line-clamp-2">${esc(n.body)}</div>
+                        ${n.imageUrl ? `<div class="text-[10px] text-blue-400 truncate mt-1"><i class="fa-solid fa-image mr-1"></i>${esc(n.imageUrl)}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        } catch (e) {
+            box.innerHTML = `<div class="text-red-400 text-xs text-center py-4">Erro ao carregar histórico: ${esc(e.message)}</div>`;
+        }
     },
 
     statCard(label, value, icon, color) {
