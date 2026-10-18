@@ -5,4 +5,4 @@ aiofiles
 sqlalchemy
 python-multipart
 websockets
-firebase-admin
+firebase-adminfirebase-admin
