@@ -33,9 +33,11 @@ class NotificacaoPayload(BaseModel):
     title: str
     body: str
     imageUrl: Optional[str] = ""
-    type: str  # 'geral' ou 'lancamento'
+    type: str  # 'geral', 'plano' ou 'lancamento'
     target: str  # 'all' ou 'specific'
     uid: Optional[str] = None
+    itemId: Optional[str] = None      # ⚡ OBRIGATÓRIO PARA LANÇAMENTO
+    itemType: Optional[str] = None    # ⚡ 'filme' ou 'serie'
 
 
 # ==========================================================
@@ -49,7 +51,9 @@ async def enviar_notificacao(payload: NotificacaoPayload):
     # 1. Salva no Firestore (coleção notificacoes)
     try:
         doc_ref = db_firestore.collection('notificacoes').document()
-        doc_ref.set({
+        
+        # Estrutura base da notificação
+        doc_data = {
             'title': payload.title,
             'body': payload.body,
             'imageUrl': payload.imageUrl,
@@ -57,7 +61,14 @@ async def enviar_notificacao(payload: NotificacaoPayload):
             'createdAt': firestore.SERVER_TIMESTAMP,
             'readBy': [],
             'deletedBy': []
-        })
+        }
+        
+        # Se for lançamento, adiciona os campos para o App conseguir abrir o filme
+        if payload.type == 'lancamento' and payload.itemId:
+            doc_data['itemId'] = str(payload.itemId)
+            doc_data['itemType'] = payload.itemType or 'filme'
+            
+        doc_ref.set(doc_data)
     except Exception as e:
         raise HTTPException(500, f"Erro ao salvar no Firestore: {e}")
 
@@ -80,23 +91,32 @@ async def enviar_notificacao(payload: NotificacaoPayload):
     if not tokens:
         return {"ok": True, "msg": "Notificação salva no app, mas nenhum usuário possui token FCM registrado.", "enviados": 0}
 
-    # 3. Envia via FCM (Multicast)
+    # 3. Prepara o payload FCM (dados em segundo plano)
+    fcm_data = {
+        'type': payload.type,
+        'imageUrl': payload.imageUrl or '',
+        'click_action': 'FLUTTER_NOTIFICATION_CLICK'
+    }
+    
+    # Adiciona ID e Tipo no pacote de dados se for lançamento
+    if payload.type == 'lancamento' and payload.itemId:
+        fcm_data['itemId'] = str(payload.itemId)
+        fcm_data['itemType'] = payload.itemType or 'filme'
+
+    # 4. Envia via FCM (Multicast)
     mensagem = messaging.MulticastMessage(
         notification=messaging.Notification(
             title=payload.title,
             body=payload.body,
             image=payload.imageUrl if payload.imageUrl else None
         ),
-        data={
-            'type': payload.type,
-            'imageUrl': payload.imageUrl or '',
-            'click_action': 'FLUTTER_NOTIFICATION_CLICK'
-        },
+        data=fcm_data,
         tokens=tokens,
         android=messaging.AndroidConfig(
             priority='high',
             notification=messaging.AndroidNotification(
-                image=payload.imageUrl if payload.imageUrl else None
+                image=payload.imageUrl if payload.imageUrl else None,
+                click_action='FLUTTER_NOTIFICATION_CLICK'
             )
         ),
         apns=messaging.APNSConfig(
@@ -111,7 +131,7 @@ async def enviar_notificacao(payload: NotificacaoPayload):
 
     response = messaging.send_each_for_multicast(mensagem)
 
-    # 4. Limpar tokens inválidos
+    # 5. Limpar tokens inválidos
     tokens_invalidos = []
     for idx, resp in enumerate(response.responses):
         if not resp.success:
@@ -157,7 +177,6 @@ async def listar_historico():
             d = doc.to_dict()
             created_at = d.get('createdAt')
             if created_at:
-                # Converte Timestamp do Firestore para string legível
                 d['createdAt'] = created_at.isoformat()
             else:
                 d['createdAt'] = None

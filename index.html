@@ -335,6 +335,10 @@ const Views = {
                             <div id="notif-image-area" class="hidden">
                                 <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
                                 <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
+                                
+                                <!-- ⚡ CAMPOS OCULTOS DO FILME/SÉRIE -->
+                                <input type="hidden" id="notif-item-id" value="">
+                                <input type="hidden" id="notif-item-type" value="">
                             </div>
                             
                             <div class="grid grid-cols-2 gap-3">
@@ -443,6 +447,8 @@ const Views = {
         title.value = '';
         body.value = '';
         img.value = '';
+        document.getElementById('notif-item-id').value = '';
+        document.getElementById('notif-item-type').value = '';
         img.dispatchEvent(new Event('input'));
 
         if (tipo === 'lancamento') {
@@ -485,7 +491,7 @@ const Views = {
             }
             box.innerHTML = d.items.map(it => `
                 <div class="flex items-center gap-2 bg-[#1a1a1a] border border-[#333] rounded p-1.5 hover:border-red-600 cursor-pointer"
-                     onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}')">
+                     onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}', '${it.id}', '${tipo}')">
                     <div class="w-6 h-8 rounded bg-gray-900 overflow-hidden flex-shrink-0">
                         ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}
                     </div>
@@ -497,10 +503,14 @@ const Views = {
         }
     },
 
-    _notifPreencher(titulo, capa) {
+    _notifPreencher(titulo, capa, id, tipo) {
         document.getElementById('notif-title').value = `🎬 Chegou: ${titulo}`;
         document.getElementById('notif-body').value = `O sucesso ${titulo} já está disponível no catálogo. Clique para assistir!`;
         document.getElementById('notif-image').value = capa;
+        
+        // ⚡ PREENCHE OS CAMPOS OCULTOS PARA ENVIAR AO BANCO
+        document.getElementById('notif-item-id').value = id;
+        document.getElementById('notif-item-type').value = tipo;
         
         // Atualiza preview
         document.getElementById('notif-title').dispatchEvent(new Event('input'));
@@ -518,13 +528,20 @@ const Views = {
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
 
+        // ⚡ PEGA OS CAMPOS OCULTOS
+        const itemId = document.getElementById('notif-item-id').value;
+        const itemType = document.getElementById('notif-item-type').value;
+
         const payload = {
             title: document.getElementById('notif-title').value,
             body: document.getElementById('notif-body').value,
             imageUrl: document.getElementById('notif-image').value,
             type: document.getElementById('notif-type').value,
             target: document.getElementById('notif-target').value,
-            uid: document.getElementById('notif-uid').value || null
+            uid: document.getElementById('notif-uid').value || null,
+            // ⚡ ENVIA PARA A API
+            itemId: itemId || null,
+            itemType: itemType || null
         };
 
         try {
@@ -536,6 +553,9 @@ const Views = {
             document.getElementById('notif-title').value = '';
             document.getElementById('notif-body').value = '';
             document.getElementById('notif-image').value = '';
+            document.getElementById('notif-item-id').value = ''; 
+            document.getElementById('notif-item-type').value = ''; 
+            
             document.getElementById('notif-title').dispatchEvent(new Event('input'));
             document.getElementById('notif-body').dispatchEvent(new Event('input'));
             document.getElementById('notif-image').dispatchEvent(new Event('input'));
