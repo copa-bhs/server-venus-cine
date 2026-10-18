@@ -79,7 +79,6 @@ def _extract_year(text):
     m = YEAR_RE.search(str(text))
     return int(m.group(1)) if m else None
 
-# ⚡ TIMEOUT AUMENTADO PARA 300s (5 MINUTOS)
 async def _fetch(client: httpx.AsyncClient, action: str) -> list:
     url = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action={action}"
     try:
@@ -87,7 +86,14 @@ async def _fetch(client: httpx.AsyncClient, action: str) -> list:
         if r.status_code != 200:
             print(f"[!] {action}: HTTP {r.status_code}")
             return []
+        
+        # Verifica se o Xtream retornou erro na estrutura (ex: {user_info: {auth: 0}})
         data = r.json()
+        if isinstance(data, dict) and "user_info" in data:
+            if data["user_info"].get("auth") == 0:
+                print(f"[!] ERRO DE AUTENTICAÇÃO NO XTREAM! Verifique usuário e senha no .env")
+                return []
+                
         return data if isinstance(data, list) else []
     except Exception as e:
         print(f"[!] {action}: Erro no download - {e}")

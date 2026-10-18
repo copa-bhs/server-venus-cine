@@ -186,8 +186,6 @@ const Api = {
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
-    
-    // Novas rotas de Sincronização
     forceSync() { return this.post('/admin/force-sync'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); }
 };
@@ -270,13 +268,9 @@ const Views = {
                         <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora
                     </button>
                 </div>
-                <div id="sync-progress" class="hidden mt-4">
-                    <div class="flex items-center gap-3 text-xs text-red-400 font-bold mb-2">
-                        <i class="fa-solid fa-circle-notch fa-spin"></i> Baixando catálogo... Isso pode levar alguns minutos.
-                    </div>
-                    <div class="w-full bg-[#1a1a1a] rounded-full h-2">
-                        <div class="bg-red-600 h-2 rounded-full animate-pulse" style="width: 100%"></div>
-                    </div>
+                
+                <!-- TERMINAL DE LOGS -->
+                <div id="sync-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-40 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1">
                 </div>
             </div>
 
@@ -305,11 +299,11 @@ const Views = {
             </div>
         `;
         
-        // Se já estiver sincronizando ao abrir a tela, mostra o loading
         if (s.sync_ativo) {
-            document.getElementById('sync-progress').classList.remove('hidden');
+            document.getElementById('sync-logs-area').classList.remove('hidden');
             document.getElementById('btn-force-sync').disabled = true;
             document.getElementById('btn-force-sync').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizando...';
+            Actions.pollSync();
         }
     },
 
@@ -319,31 +313,17 @@ const Views = {
     async notificacoes(c) {
         c.innerHTML = `
             <div class="grid md:grid-cols-2 gap-6">
-                
-                <!-- Lado Esquerdo: Criação -->
                 <div class="space-y-4">
-                    
-                    <!-- Modelos Rápidos -->
                     <div class="stat-card rounded-xl p-4">
                         <div class="text-xs font-semibold text-gray-400 uppercase mb-3"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Modelos Rápidos</div>
                         <div class="grid grid-cols-3 gap-2">
-                            <div class="template-btn active" id="btn-tpl-geral" onclick="Views._notifTemplate('geral')">
-                                <i class="fa-solid fa-bullhorn text-lg"></i> Aviso Geral
-                            </div>
-                            <div class="template-btn" id="btn-tpl-plano" onclick="Views._notifTemplate('plano')">
-                                <i class="fa-solid fa-crown text-lg"></i> Novo Plano
-                            </div>
-                            <div class="template-btn" id="btn-tpl-lancamento" onclick="Views._notifTemplate('lancamento')">
-                                <i class="fa-solid fa-film text-lg"></i> Lançamento
-                            </div>
+                            <div class="template-btn active" id="btn-tpl-geral" onclick="Views._notifTemplate('geral')"><i class="fa-solid fa-bullhorn text-lg"></i> Aviso Geral</div>
+                            <div class="template-btn" id="btn-tpl-plano" onclick="Views._notifTemplate('plano')"><i class="fa-solid fa-crown text-lg"></i> Novo Plano</div>
+                            <div class="template-btn" id="btn-tpl-lancamento" onclick="Views._notifTemplate('lancamento')"><i class="fa-solid fa-film text-lg"></i> Lançamento</div>
                         </div>
                     </div>
-
-                    <!-- Formulário -->
                     <div class="stat-card rounded-xl p-5">
                         <form onsubmit="Views._enviarNotif(event)" class="space-y-4">
-                            
-                            <!-- Área exclusiva para buscar filme se for lançamento -->
                             <div id="notif-busca-area" class="hidden bg-[#0a0a0a] border border-[#262626] rounded-lg p-3">
                                 <label class="text-[10px] text-red-400 font-bold block mb-1">🔍 Puxar dados do catálogo (Opcional)</label>
                                 <div class="flex gap-2">
@@ -356,26 +336,20 @@ const Views = {
                                 </div>
                                 <div id="notif-busca-resultados" class="mt-2 space-y-1 max-h-32 overflow-y-auto"></div>
                             </div>
-
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Título *</label>
-                                <input id="notif-title" class="input-dark" required placeholder="Digite o título da notificação...">
+                                <input id="notif-title" class="input-dark" required placeholder="Digite o título...">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
                                 <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Digite a mensagem..."></textarea>
                             </div>
-                            
-                            <!-- URL da Imagem só aparece no Lançamento -->
                             <div id="notif-image-area" class="hidden">
                                 <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
                                 <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
-                                
-                                <!-- ⚡ CAMPOS OCULTOS DO FILME/SÉRIE -->
                                 <input type="hidden" id="notif-item-id" value="">
                                 <input type="hidden" id="notif-item-type" value="">
                             </div>
-                            
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
@@ -392,33 +366,22 @@ const Views = {
                                     </select>
                                 </div>
                             </div>
-                            
                             <div id="notif-uid-area" class="hidden">
                                 <label class="text-xs text-gray-400 block mb-1">UID do Usuário</label>
                                 <input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase">
                             </div>
-                            
                             <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2 mt-4">
                                 <i class="fa-solid fa-rocket"></i> Disparar Notificação
                             </button>
                         </form>
                     </div>
                 </div>
-
-                <!-- Lado Direito: Preview e Histórico -->
                 <div class="space-y-4">
-                    
-                    <!-- Preview no Celular -->
                     <div class="stat-card rounded-xl p-5">
                         <div class="text-xs font-semibold text-gray-400 uppercase mb-4"><i class="fa-solid fa-mobile-screen mr-1"></i> Preview no Celular</div>
-                        
-                        <!-- Mockup da notificação -->
                         <div class="bg-[#1c1c1e] border border-[#333] rounded-2xl p-3 shadow-lg flex gap-3 relative overflow-hidden">
-                            <div id="preview-img-box" class="w-10 h-10 rounded-lg bg-[#333] flex items-center justify-center flex-shrink-0 overflow-hidden hidden">
-                                <img id="preview-img" src="" class="w-full h-full object-cover">
-                            </div>
+                            <div id="preview-img-box" class="w-10 h-10 rounded-lg bg-[#333] flex items-center justify-center flex-shrink-0 overflow-hidden hidden"><img id="preview-img" src="" class="w-full h-full object-cover"></div>
                             <div id="preview-icon-box" class="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center flex-shrink-0 text-white font-black italic text-xl">V</div>
-                            
                             <div class="flex-1 min-w-0">
                                 <div class="flex justify-between items-center mb-1">
                                     <span class="text-[10px] text-gray-400 uppercase font-bold">Vênus Cine</span>
@@ -429,420 +392,184 @@ const Views = {
                             </div>
                         </div>
                     </div>
-
-                    <!-- Histórico -->
                     <div class="stat-card rounded-xl p-5 flex flex-col h-[400px]">
                         <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center">
                             <span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico</span>
                             <button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button>
                         </div>
-                        <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2">
-                            <div class="text-center text-gray-500 text-xs py-4">Carregando...</div>
-                        </div>
+                        <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2"><div class="text-center text-gray-500 text-xs py-4">Carregando...</div></div>
                     </div>
                 </div>
             </div>
         `;
-        
         this._carregarHistoricoNotif();
-        
-        // Listener para atualizar o preview em tempo real
         document.getElementById('notif-title').oninput = (e) => document.getElementById('preview-title').textContent = e.target.value || 'Título da Notificação';
         document.getElementById('notif-body').oninput = (e) => document.getElementById('preview-body').textContent = e.target.value || 'A mensagem que você digitar vai aparecer aqui...';
         document.getElementById('notif-image').oninput = (e) => {
-            const box = document.getElementById('preview-img-box');
-            const icon = document.getElementById('preview-icon-box');
-            const img = document.getElementById('preview-img');
-            if (e.target.value) {
-                img.src = e.target.value;
-                box.classList.remove('hidden');
-                icon.classList.add('hidden');
-            } else {
-                box.classList.add('hidden');
-                icon.classList.remove('hidden');
-            }
+            const box = document.getElementById('preview-img-box'); const icon = document.getElementById('preview-icon-box'); const img = document.getElementById('preview-img');
+            if (e.target.value) { img.src = e.target.value; box.classList.remove('hidden'); icon.classList.add('hidden'); } else { box.classList.add('hidden'); icon.classList.remove('hidden'); }
         };
-        
-        // Inicia com o template Geral
         this._notifTemplate('geral');
     },
 
     _notifTemplate(tipo) {
         document.querySelectorAll('.template-btn').forEach(b => b.classList.remove('active'));
         document.getElementById('btn-tpl-' + tipo).classList.add('active');
-        
-        const buscaArea = document.getElementById('notif-busca-area');
-        const imgArea = document.getElementById('notif-image-area');
-        const title = document.getElementById('notif-title');
-        const body = document.getElementById('notif-body');
-        const img = document.getElementById('notif-image');
-        const type = document.getElementById('notif-type');
-
-        // Limpa os campos ao trocar de modelo
-        title.value = '';
-        body.value = '';
-        img.value = '';
-        document.getElementById('notif-item-id').value = '';
-        document.getElementById('notif-item-type').value = '';
-        img.dispatchEvent(new Event('input'));
-
+        const buscaArea = document.getElementById('notif-busca-area'); const imgArea = document.getElementById('notif-image-area');
+        const title = document.getElementById('notif-title'); const body = document.getElementById('notif-body'); const img = document.getElementById('notif-image'); const type = document.getElementById('notif-type');
+        title.value = ''; body.value = ''; img.value = ''; document.getElementById('notif-item-id').value = ''; document.getElementById('notif-item-type').value = ''; img.dispatchEvent(new Event('input'));
         if (tipo === 'lancamento') {
-            buscaArea.classList.remove('hidden');
-            imgArea.classList.remove('hidden');
-            title.placeholder = 'Ex: 🎬 Chegou: Vingadores';
-            body.placeholder = 'O sucesso Vingadores já está disponível no catálogo.';
-            type.value = 'lancamento';
+            buscaArea.classList.remove('hidden'); imgArea.classList.remove('hidden');
+            title.placeholder = 'Ex: 🎬 Chegou: Vingadores'; body.placeholder = 'O sucesso Vingadores já está disponível.'; type.value = 'lancamento';
         } else if (tipo === 'plano') {
-            buscaArea.classList.add('hidden');
-            imgArea.classList.add('hidden');
-            title.placeholder = 'Ex: 👑 Novo Plano Premium';
-            body.placeholder = 'Assine agora o plano Premium e assista em 4K sem anúncios!';
-            type.value = 'geral';
-        } else { // geral
-            buscaArea.classList.add('hidden');
-            imgArea.classList.add('hidden');
-            title.placeholder = 'Ex: 📢 Manutenção Programada';
-            body.placeholder = 'Informamos que o sistema passará por uma breve manutenção.';
-            type.value = 'geral';
+            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden');
+            title.placeholder = 'Ex: 👑 Novo Plano Premium'; body.placeholder = 'Assine agora o plano Premium e assista em 4K!'; type.value = 'geral';
+        } else {
+            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden');
+            title.placeholder = 'Ex: 📢 Manutenção Programada'; body.placeholder = 'Informamos que o sistema passará por uma breve manutenção.'; type.value = 'geral';
         }
-        
-        title.dispatchEvent(new Event('input'));
-        body.dispatchEvent(new Event('input'));
+        title.dispatchEvent(new Event('input')); body.dispatchEvent(new Event('input'));
     },
 
     async _notifBuscar() {
-        const tipo = document.getElementById('notif-busca-tipo').value;
-        const q = document.getElementById('notif-busca-q').value.trim();
-        const box = document.getElementById('notif-busca-resultados');
+        const tipo = document.getElementById('notif-busca-tipo').value; const q = document.getElementById('notif-busca-q').value.trim(); const box = document.getElementById('notif-busca-resultados');
         box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs"><i class="fa-solid fa-circle-notch fa-spin"></i></div>';
-
         const rota = tipo === 'filme' ? 'filmes' : 'series';
         try {
             const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=5`);
             const d = await r.json();
-            if (!d.items?.length) {
-                box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs">Nada encontrado</div>';
-                return;
-            }
+            if (!d.items?.length) { box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs">Nada encontrado</div>'; return; }
             box.innerHTML = d.items.map(it => `
-                <div class="flex items-center gap-2 bg-[#1a1a1a] border border-[#333] rounded p-1.5 hover:border-red-600 cursor-pointer"
-                     onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}', '${it.id}', '${tipo}')">
-                    <div class="w-6 h-8 rounded bg-gray-900 overflow-hidden flex-shrink-0">
-                        ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}
-                    </div>
+                <div class="flex items-center gap-2 bg-[#1a1a1a] border border-[#333] rounded p-1.5 hover:border-red-600 cursor-pointer" onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}', '${it.id}', '${tipo}')">
+                    <div class="w-6 h-8 rounded bg-gray-900 overflow-hidden flex-shrink-0">${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}</div>
                     <div class="text-xs font-bold truncate flex-1">${esc(it.titulo)}</div>
                 </div>
             `).join('');
-        } catch (e) {
-            box.innerHTML = `<div class="text-red-400 text-xs text-center py-2">Erro na busca</div>`;
-        }
+        } catch (e) { box.innerHTML = `<div class="text-red-400 text-xs text-center py-2">Erro na busca</div>`; }
     },
 
     _notifPreencher(titulo, capa, id, tipo) {
         document.getElementById('notif-title').value = `🎬 Chegou: ${titulo}`;
         document.getElementById('notif-body').value = `O sucesso ${titulo} já está disponível no catálogo. Clique para assistir!`;
-        document.getElementById('notif-image').value = capa;
-        
-        // ⚡ PREENCHE OS CAMPOS OCULTOS PARA ENVIAR AO BANCO
-        document.getElementById('notif-item-id').value = id;
-        document.getElementById('notif-item-type').value = tipo;
-        
-        // Atualiza preview
-        document.getElementById('notif-title').dispatchEvent(new Event('input'));
-        document.getElementById('notif-body').dispatchEvent(new Event('input'));
-        document.getElementById('notif-image').dispatchEvent(new Event('input'));
-        
-        // Limpa busca
-        document.getElementById('notif-busca-resultados').innerHTML = '';
-        document.getElementById('notif-busca-q').value = '';
+        document.getElementById('notif-image').value = capa; document.getElementById('notif-item-id').value = id; document.getElementById('notif-item-type').value = tipo;
+        document.getElementById('notif-title').dispatchEvent(new Event('input')); document.getElementById('notif-body').dispatchEvent(new Event('input')); document.getElementById('notif-image').dispatchEvent(new Event('input'));
+        document.getElementById('notif-busca-resultados').innerHTML = ''; document.getElementById('notif-busca-q').value = '';
     },
 
     async _enviarNotif(ev) {
-        ev.preventDefault();
-        const btn = document.getElementById('btn-notif');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
-
-        // ⚡ PEGA OS CAMPOS OCULTOS
-        const itemId = document.getElementById('notif-item-id').value;
-        const itemType = document.getElementById('notif-item-type').value;
-
-        const payload = {
-            title: document.getElementById('notif-title').value,
-            body: document.getElementById('notif-body').value,
-            imageUrl: document.getElementById('notif-image').value,
-            type: document.getElementById('notif-type').value,
-            target: document.getElementById('notif-target').value,
-            uid: document.getElementById('notif-uid').value || null,
-            itemId: itemId || null,
-            itemType: itemType || null
-        };
-
+        ev.preventDefault(); const btn = document.getElementById('btn-notif'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
+        const payload = { title: document.getElementById('notif-title').value, body: document.getElementById('notif-body').value, imageUrl: document.getElementById('notif-image').value, type: document.getElementById('notif-type').value, target: document.getElementById('notif-target').value, uid: document.getElementById('notif-uid').value || null, itemId: document.getElementById('notif-item-id').value || null, itemType: document.getElementById('notif-item-type').value || null };
         try {
             const r = await Api.notifEnviar(payload);
             if (!r.ok) throw new Error(r.msg || 'Erro ao enviar');
             Toast.show(`✅ ${r.msg}`, 'success', 5000);
-            
-            // Limpa form
-            document.getElementById('notif-title').value = '';
-            document.getElementById('notif-body').value = '';
-            document.getElementById('notif-image').value = '';
-            document.getElementById('notif-item-id').value = ''; 
-            document.getElementById('notif-item-type').value = ''; 
-            
-            document.getElementById('notif-title').dispatchEvent(new Event('input'));
-            document.getElementById('notif-body').dispatchEvent(new Event('input'));
-            document.getElementById('notif-image').dispatchEvent(new Event('input'));
-            
+            document.getElementById('notif-title').value = ''; document.getElementById('notif-body').value = ''; document.getElementById('notif-image').value = ''; document.getElementById('notif-item-id').value = ''; document.getElementById('notif-item-type').value = '';
+            document.getElementById('notif-title').dispatchEvent(new Event('input')); document.getElementById('notif-body').dispatchEvent(new Event('input')); document.getElementById('notif-image').dispatchEvent(new Event('input'));
             this._carregarHistoricoNotif();
-        } catch (e) {
-            Toast.show(`❌ Erro: ${e.message}`, 'error', 5000);
-        }
-
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-rocket"></i> Disparar Notificação';
+        } catch (e) { Toast.show(`❌ Erro: ${e.message}`, 'error', 5000); }
+        btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rocket"></i> Disparar Notificação';
     },
 
     async _carregarHistoricoNotif() {
-        const box = document.getElementById('notif-historico');
-        if(!box) return;
+        const box = document.getElementById('notif-historico'); if(!box) return;
         try {
             const r = await Api.notifHistorico();
-            if (!r.items || r.items.length === 0) {
-                box.innerHTML = `<div class="text-center text-gray-500 text-xs py-4">Nenhuma notificação enviada ainda.</div>`;
-                return;
-            }
+            if (!r.items || r.items.length === 0) { box.innerHTML = `<div class="text-center text-gray-500 text-xs py-4">Nenhuma notificação enviada ainda.</div>`; return; }
             box.innerHTML = r.items.map(n => {
-                let dataFormatada = '';
-                if (n.createdAt) {
-                    try {
-                        const dt = new Date(n.createdAt);
-                        dataFormatada = dt.toLocaleString('pt-BR', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
-                    } catch {}
-                }
-                
-                const tipoBadge = n.type === 'lancamento' 
-                    ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold">LANÇAMENTO</span>`
-                    : `<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">GERAL</span>`;
-
-                return `
-                    <div class="bg-[#0a0a0a] border border-[#262626] rounded-lg p-2.5">
-                        <div class="flex items-center gap-2 mb-1">
-                            ${tipoBadge}
-                            <span class="text-[10px] text-gray-500 ml-auto">${dataFormatada}</span>
-                        </div>
-                        <div class="text-xs font-bold text-gray-200 truncate">${esc(n.title)}</div>
-                        <div class="text-[10px] text-gray-400 mt-0.5 line-clamp-2">${esc(n.body)}</div>
-                        ${n.imageUrl ? `<div class="mt-1 h-10 w-full rounded overflow-hidden"><img src="${esc(n.imageUrl)}" class="h-full object-cover"></div>` : ''}
-                    </div>
-                `;
+                let dataFormatada = ''; if (n.createdAt) { try { const dt = new Date(n.createdAt); dataFormatada = dt.toLocaleString('pt-BR', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}); } catch {} }
+                const tipoBadge = n.type === 'lancamento' ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold">LANÇAMENTO</span>` : `<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">GERAL</span>`;
+                return `<div class="bg-[#0a0a0a] border border-[#262626] rounded-lg p-2.5"><div class="flex items-center gap-2 mb-1">${tipoBadge}<span class="text-[10px] text-gray-500 ml-auto">${dataFormatada}</span></div><div class="text-xs font-bold text-gray-200 truncate">${esc(n.title)}</div><div class="text-[10px] text-gray-400 mt-0.5 line-clamp-2">${esc(n.body)}</div>${n.imageUrl ? `<div class="mt-1 h-10 w-full rounded overflow-hidden"><img src="${esc(n.imageUrl)}" class="h-full object-cover"></div>` : ''}</div>`;
             }).join('');
-        } catch (e) {
-            box.innerHTML = `<div class="text-red-400 text-xs text-center py-4">Erro ao carregar histórico.</div>`;
-        }
+        } catch (e) { box.innerHTML = `<div class="text-red-400 text-xs text-center py-4">Erro ao carregar histórico.</div>`; }
     },
 
     statCard(label, value, icon, color) {
-        return `
-            <div class="stat-card rounded-xl p-4">
-                <div class="flex items-center justify-between mb-2">
-                    <div class="text-xs font-semibold text-gray-400 uppercase">${label}</div>
-                    <i class="fa-solid ${icon} ${color}"></i>
-                </div>
-                <div class="text-2xl font-black">${value}</div>
-            </div>
-        `;
+        return `<div class="stat-card rounded-xl p-4"><div class="flex items-center justify-between mb-2"><div class="text-xs font-semibold text-gray-400 uppercase">${label}</div><i class="fa-solid ${icon} ${color}"></i></div><div class="text-2xl font-black">${value}</div></div>`;
     },
 
-    // ============================================================
-    // SLIDER
-    // ============================================================
     async slider(c) {
-        const data = await fetch(API + '/admin/slider').then(r => r.json()).catch(() => ({ items: [] }));
-        const itens = data.items || [];
-
+        const data = await fetch(API + '/admin/slider').then(r => r.json()).catch(() => ({ items: [] })); const itens = data.items || [];
         c.innerHTML = `
             <div class="stat-card rounded-xl p-4 mb-4">
-                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">
-                    <i class="fa-solid fa-plus mr-1"></i> Adicionar ao slider
-                </div>
+                <div class="text-xs font-semibold text-gray-400 uppercase mb-3"><i class="fa-solid fa-plus mr-1"></i> Adicionar ao slider</div>
                 <div class="flex flex-wrap gap-2 items-end">
-                    <div class="flex-1 min-w-[140px]">
-                        <label class="text-[10px] text-gray-500 block mb-1">Tipo</label>
-                        <select id="sl-tipo" class="input-dark">
-                            <option value="filme">🎬 Filme</option>
-                            <option value="serie">📺 Série</option>
-                        </select>
-                    </div>
-                    <div class="flex-[2] min-w-[220px]">
-                        <label class="text-[10px] text-gray-500 block mb-1">Buscar título</label>
-                        <input id="sl-busca" class="input-dark" placeholder="Digite pra buscar...">
-                    </div>
-                    <button onclick="Views._sliderBuscar()" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
-                        <i class="fa-solid fa-search"></i> Buscar
-                    </button>
+                    <div class="flex-1 min-w-[140px]"><label class="text-[10px] text-gray-500 block mb-1">Tipo</label><select id="sl-tipo" class="input-dark"><option value="filme">🎬 Filme</option><option value="serie">📺 Série</option></select></div>
+                    <div class="flex-[2] min-w-[220px]"><label class="text-[10px] text-gray-500 block mb-1">Buscar título</label><input id="sl-busca" class="input-dark" placeholder="Digite pra buscar..."></div>
+                    <button onclick="Views._sliderBuscar()" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold"><i class="fa-solid fa-search"></i> Buscar</button>
                 </div>
                 <div id="sl-resultados" class="mt-3 max-h-64 overflow-y-auto"></div>
             </div>
-
             <div class="stat-card rounded-xl p-4">
-                <div class="flex items-center justify-between mb-3">
-                    <div class="text-xs font-semibold text-gray-400 uppercase">
-                        <i class="fa-solid fa-images mr-1"></i> Slides ativos (${itens.length})
-                    </div>
-                    <div class="text-[10px] text-gray-500">Use ↑↓ pra reordenar</div>
-                </div>
-                ${itens.length === 0
-                    ? `<div class="text-center text-gray-500 py-8 text-sm">Nenhum slide manual. O hero automático do TMDB tá sendo usado.</div>`
-                    : `<div class="space-y-2" id="sl-lista">${itens.map((s, i) => Views._sliderCard(s, i, itens.length)).join('')}</div>`
-                }
+                <div class="flex items-center justify-between mb-3"><div class="text-xs font-semibold text-gray-400 uppercase"><i class="fa-solid fa-images mr-1"></i> Slides ativos (${itens.length})</div><div class="text-[10px] text-gray-500">Use ↑↓ pra reordenar</div></div>
+                ${itens.length === 0 ? `<div class="text-center text-gray-500 py-8 text-sm">Nenhum slide manual. O hero automático do TMDB tá sendo usado.</div>` : `<div class="space-y-2" id="sl-lista">${itens.map((s, i) => Views._sliderCard(s, i, itens.length)).join('')}</div>`}
             </div>
         `;
-
-        document.getElementById('sl-busca').onkeydown = (e) => {
-            if (e.key === 'Enter') Views._sliderBuscar();
-        };
+        document.getElementById('sl-busca').onkeydown = (e) => { if (e.key === 'Enter') Views._sliderBuscar(); };
     },
 
     _sliderCard(s, i, total) {
         return `
             <div class="bg-[#0f0f0f] border border-[#262626] rounded-lg p-3 flex items-center gap-3" data-slide-id="${s.id}">
                 <div class="flex flex-col gap-1">
-                    <button onclick="Views._sliderMover(${s.id}, ${i - 1})" ${i === 0 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30">
-                        <i class="fa-solid fa-chevron-up"></i>
-                    </button>
-                    <button onclick="Views._sliderMover(${s.id}, ${i + 1})" ${i === total - 1 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30">
-                        <i class="fa-solid fa-chevron-down"></i>
-                    </button>
+                    <button onclick="Views._sliderMover(${s.id}, ${i - 1})" ${i === 0 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30"><i class="fa-solid fa-chevron-up"></i></button>
+                    <button onclick="Views._sliderMover(${s.id}, ${i + 1})" ${i === total - 1 ? 'disabled' : ''} class="w-6 h-6 rounded bg-[#1a1a1a] hover:bg-[#222] text-[10px] disabled:opacity-30"><i class="fa-solid fa-chevron-down"></i></button>
                 </div>
-                <div class="w-20 h-12 rounded overflow-hidden bg-[#0a0a0a] flex-shrink-0">
-                    ${s.banner ? `<img src="${esc(s.banner)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}
-                </div>
-                <div class="flex-1 min-w-0">
-                    <div class="text-sm font-bold truncate">${esc(s.titulo)}</div>
-                    <div class="text-[10px] text-gray-500">
-                        ${s.ref_tipo === 'filme' ? '🎬' : '📺'} ${esc(s.ref?.ano || '—')} · ID ${s.ref_id}
-                    </div>
-                </div>
-                <button onclick="Views._sliderEditar(${s.id})" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222]" title="Editar">
-                    <i class="fa-solid fa-pen text-xs"></i>
-                </button>
-                <button onclick="Views._sliderRemover(${s.id})" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Remover">
-                    <i class="fa-solid fa-trash text-xs"></i>
-                </button>
+                <div class="w-20 h-12 rounded overflow-hidden bg-[#0a0a0a] flex-shrink-0">${s.banner ? `<img src="${esc(s.banner)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}</div>
+                <div class="flex-1 min-w-0"><div class="text-sm font-bold truncate">${esc(s.titulo)}</div><div class="text-[10px] text-gray-500">${s.ref_tipo === 'filme' ? '🎬' : '📺'} ${esc(s.ref?.ano || '—')} · ID ${s.ref_id}</div></div>
+                <button onclick="Views._sliderEditar(${s.id})" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222]" title="Editar"><i class="fa-solid fa-pen text-xs"></i></button>
+                <button onclick="Views._sliderRemover(${s.id})" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Remover"><i class="fa-solid fa-trash text-xs"></i></button>
             </div>
         `;
     },
 
     async _sliderBuscar() {
-        const tipo = document.getElementById('sl-tipo').value;
-        const q = document.getElementById('sl-busca').value.trim();
-        const box = document.getElementById('sl-resultados');
+        const tipo = document.getElementById('sl-tipo').value; const q = document.getElementById('sl-busca').value.trim(); const box = document.getElementById('sl-resultados');
         box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs"><i class="fa-solid fa-circle-notch fa-spin"></i></div>';
-
         const rota = tipo === 'filme' ? 'filmes' : 'series';
         try {
-            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=20`);
-            const d = await r.json();
-            if (!d.items?.length) {
-                box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Nada encontrado</div>';
-                return;
-            }
+            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=20`); const d = await r.json();
+            if (!d.items?.length) { box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Nada encontrado</div>'; return; }
             box.innerHTML = d.items.map(it => `
-                <div class="flex items-center gap-3 bg-[#0a0a0a] border border-[#262626] rounded-lg p-2 mb-1 hover:border-red-600 cursor-pointer"
-                     onclick="Views._sliderAdicionar('${tipo}', ${it.id})">
-                    <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden flex-shrink-0">
-                        ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <div class="text-xs font-bold truncate">${esc(it.titulo)}</div>
-                        <div class="text-[10px] text-gray-500">${esc(it.ano || '—')}</div>
-                    </div>
-                    <button class="h-8 px-3 rounded bg-red-600 text-xs font-bold">
-                        <i class="fa-solid fa-plus"></i> Adicionar
-                    </button>
+                <div class="flex items-center gap-3 bg-[#0a0a0a] border border-[#262626] rounded-lg p-2 mb-1 hover:border-red-600 cursor-pointer" onclick="Views._sliderAdicionar('${tipo}', ${it.id})">
+                    <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden flex-shrink-0">${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}</div>
+                    <div class="flex-1 min-w-0"><div class="text-xs font-bold truncate">${esc(it.titulo)}</div><div class="text-[10px] text-gray-500">${esc(it.ano || '—')}</div></div>
+                    <button class="h-8 px-3 rounded bg-red-600 text-xs font-bold"><i class="fa-solid fa-plus"></i> Adicionar</button>
                 </div>
             `).join('');
-        } catch (e) {
-            box.innerHTML = `<div class="text-red-400 text-xs text-center py-3">Erro: ${esc(e.message)}</div>`;
-        }
+        } catch (e) { box.innerHTML = `<div class="text-red-400 text-xs text-center py-3">Erro: ${esc(e.message)}</div>`; }
     },
 
     async _sliderAdicionar(tipo, id) {
-        const fd = new FormData();
-        fd.append('ref_tipo', tipo);
-        fd.append('ref_id', id);
-        try {
-            const r = await fetch(API + '/admin/slider', { method: 'POST', body: fd });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            Toast.show('✅ Adicionado ao slider!', 'success');
-            Router.render();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+        const fd = new FormData(); fd.append('ref_tipo', tipo); fd.append('ref_id', id);
+        try { const r = await fetch(API + '/admin/slider', { method: 'POST', body: fd }); if (!r.ok) throw new Error('HTTP ' + r.status); Toast.show('✅ Adicionado ao slider!', 'success'); Router.render(); } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     async _sliderRemover(id) {
         if (!confirm('Remover esse slide?')) return;
-        try {
-            await fetch(API + '/admin/slider/' + id, { method: 'DELETE' });
-            Toast.show('🗑️ Removido', 'success');
-            Router.render();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+        try { await fetch(API + '/admin/slider/' + id, { method: 'DELETE' }); Toast.show('🗑️ Removido', 'success'); Router.render(); } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     async _sliderMover(id, novaPos) {
-        const lista = document.querySelectorAll('#sl-lista [data-slide-id]');
-        const ids = Array.from(lista).map(el => el.dataset.slideId);
-        const atual = ids.indexOf(String(id));
+        const lista = document.querySelectorAll('#sl-lista [data-slide-id]'); const ids = Array.from(lista).map(el => el.dataset.slideId); const atual = ids.indexOf(String(id));
         if (atual === -1 || novaPos < 0 || novaPos >= ids.length) return;
-
-        ids.splice(atual, 1);
-        ids.splice(novaPos, 0, String(id));
-
-        const fd = new FormData();
-        fd.append('ordem', ids.join(','));
-        try {
-            await fetch(API + '/admin/slider/reordenar', { method: 'POST', body: fd });
-            Toast.show('↕️ Reordenado', 'success', 1200);
-            Router.render();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+        ids.splice(atual, 1); ids.splice(novaPos, 0, String(id));
+        const fd = new FormData(); fd.append('ordem', ids.join(','));
+        try { await fetch(API + '/admin/slider/reordenar', { method: 'POST', body: fd }); Toast.show('↕️ Reordenado', 'success', 1200); Router.render(); } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     async _sliderEditar(id) {
-        const r = await fetch(API + '/admin/slider').then(r => r.json());
-        const s = (r.items || []).find(x => x.id === id);
-        if (!s) return;
-
+        const r = await fetch(API + '/admin/slider').then(r => r.json()); const s = (r.items || []).find(x => x.id === id); if (!s) return;
         const root = document.getElementById('modal-root');
         root.innerHTML = `
             <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onclick="if(event.target===this)Views.fecharModal()">
                 <div class="bg-[#141414] rounded-2xl w-full max-w-lg border border-[#262626]">
-                    <div class="p-4 border-b border-[#262626] flex items-center justify-between">
-                        <div class="font-bold text-sm">Editar slide: ${esc(s.titulo)}</div>
-                        <button onclick="Views.fecharModal()" class="w-8 h-8 rounded-lg hover:bg-[#222]">
-                            <i class="fa-solid fa-xmark"></i>
-                        </button>
-                    </div>
+                    <div class="p-4 border-b border-[#262626] flex items-center justify-between"><div class="font-bold text-sm">Editar slide: ${esc(s.titulo)}</div><button onclick="Views.fecharModal()" class="w-8 h-8 rounded-lg hover:bg-[#222]"><i class="fa-solid fa-xmark"></i></button></div>
                     <form onsubmit="Views._sliderSalvar(event, ${id})" class="p-5 space-y-3">
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Título (vazio = usa do banco)</label>
-                            <input name="titulo" value="${esc(s.titulo || '')}" class="input-dark">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">URL do banner (vazio = usa do banco)</label>
-                            <input name="banner" value="${esc(s.banner || '')}" class="input-dark font-mono text-xs">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">URL do logo (vazio = usa do banco)</label>
-                            <input name="logo" value="${esc(s.logo || '')}" class="input-dark font-mono text-xs">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Sinopse customizada</label>
-                            <textarea name="sinopse" rows="3" class="input-dark">${esc(s.sinopse || '')}</textarea>
-                        </div>
-                        <div class="flex gap-2 pt-2">
-                            <button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button>
-                            <button type="submit" class="flex-1 h-10 rounded-lg bg-red-600 text-xs font-bold">Salvar</button>
-                        </div>
+                        <div><label class="text-xs text-gray-400 block mb-1">Título (vazio = usa do banco)</label><input name="titulo" value="${esc(s.titulo || '')}" class="input-dark"></div>
+                        <div><label class="text-xs text-gray-400 block mb-1">URL do banner (vazio = usa do banco)</label><input name="banner" value="${esc(s.banner || '')}" class="input-dark font-mono text-xs"></div>
+                        <div><label class="text-xs text-gray-400 block mb-1">URL do logo (vazio = usa do banco)</label><input name="logo" value="${esc(s.logo || '')}" class="input-dark font-mono text-xs"></div>
+                        <div><label class="text-xs text-gray-400 block mb-1">Sinopse customizada</label><textarea name="sinopse" rows="3" class="input-dark">${esc(s.sinopse || '')}</textarea></div>
+                        <div class="flex gap-2 pt-2"><button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button><button type="submit" class="flex-1 h-10 rounded-lg bg-red-600 text-xs font-bold">Salvar</button></div>
                     </form>
                 </div>
             </div>
@@ -850,141 +577,67 @@ const Views = {
     },
 
     async _sliderSalvar(ev, id) {
-        ev.preventDefault();
-        const form = ev.target;
-        const fd = new FormData();
-        ['titulo','banner','logo','sinopse'].forEach(k => {
-            fd.append(k, form.querySelector(`[name="${k}"]`).value);
-        });
-        try {
-            const r = await fetch(API + '/admin/slider/' + id, { method: 'PUT', body: fd });
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            Toast.show('✅ Slide atualizado', 'success');
-            Views.fecharModal();
-            Router.render();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+        ev.preventDefault(); const form = ev.target; const fd = new FormData();
+        ['titulo','banner','logo','sinopse'].forEach(k => { fd.append(k, form.querySelector(`[name="${k}"]`).value); });
+        try { const r = await fetch(API + '/admin/slider/' + id, { method: 'PUT', body: fd }); if (!r.ok) throw new Error('HTTP ' + r.status); Toast.show('✅ Slide atualizado', 'success'); Views.fecharModal(); Router.render(); } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
-    // ============================================================
-    // LISTAS
-    // ============================================================
     async list(c, tipo) {
-        const state = window._listState = window._listState || {};
-        state[tipo] = state[tipo] || { page: 1, size: 30, q: '' };
-
+        const state = window._listState = window._listState || {}; state[tipo] = state[tipo] || { page: 1, size: 30, q: '' };
         const load = async () => {
-            const st = state[tipo];
-            let data;
-            if (tipo === 'filme') data = await Api.adminFilmes(st.q, st.page, st.size);
-            else if (tipo === 'serie') data = await Api.adminSeries(st.q, st.page, st.size);
-            else data = await Api.adminCanais(st.q, st.page, st.size);
+            const st = state[tipo]; let data;
+            if (tipo === 'filme') data = await Api.adminFilmes(st.q, st.page, st.size); else if (tipo === 'serie') data = await Api.adminSeries(st.q, st.page, st.size); else data = await Api.adminCanais(st.q, st.page, st.size);
             renderList(data);
         };
-
         const renderList = (data) => {
             const items = data.items || [];
             c.innerHTML = `
                 <div class="flex flex-wrap gap-2 mb-4">
-                    <input id="search-${tipo}" type="text" placeholder="🔍 Buscar título no banco..." value="${esc(state[tipo].q)}"
-                        class="input-dark flex-1 min-w-[200px]">
-                    <button onclick="Views._search('${tipo}')" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
-                        <i class="fa-solid fa-search"></i> Buscar
-                    </button>
+                    <input id="search-${tipo}" type="text" placeholder="🔍 Buscar título no banco..." value="${esc(state[tipo].q)}" class="input-dark flex-1 min-w-[200px]">
+                    <button onclick="Views._search('${tipo}')" class="h-10 px-4 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold"><i class="fa-solid fa-search"></i> Buscar</button>
                 </div>
-
                 <div class="stat-card rounded-xl overflow-hidden">
                     <div class="overflow-x-auto">
                         <table class="w-full text-sm">
-                            <thead class="bg-[#0f0f0f] border-b border-[#262626] text-xs text-gray-400 uppercase">
-                                <tr>
-                                    <th class="text-left px-4 py-3 w-16"></th>
-                                    <th class="text-left px-4 py-3">Título</th>
-                                    <th class="text-left px-4 py-3 hidden sm:table-cell">Ano</th>
-                                    <th class="text-left px-4 py-3 hidden md:table-cell">Status</th>
-                                    <th class="text-center px-4 py-3 w-24">Ações</th>
-                                </tr>
-                            </thead>
+                            <thead class="bg-[#0f0f0f] border-b border-[#262626] text-xs text-gray-400 uppercase"><tr><th class="text-left px-4 py-3 w-16"></th><th class="text-left px-4 py-3">Título</th><th class="text-left px-4 py-3 hidden sm:table-cell">Ano</th><th class="text-left px-4 py-3 hidden md:table-cell">Status</th><th class="text-center px-4 py-3 w-24">Ações</th></tr></thead>
                             <tbody>
-                                ${items.length === 0
-                                    ? `<tr><td colspan="5" class="text-center py-12 text-gray-500">Nenhum item</td></tr>`
-                                    : items.map(it => `
-                                        <tr class="border-b border-[#1f1f1f] hover:bg-[#0f0f0f] cursor-pointer" onclick="Views.editar('${tipo}', ${it.id})">
-                                            <td class="px-4 py-3">
-                                                <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden">
-                                                    ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}
-                                                </div>
-                                            </td>
-                                            <td class="px-4 py-3">
-                                                <div class="font-medium truncate max-w-[400px]">${esc(it.titulo)}</div>
-                                                <div class="text-[10px] text-gray-500">ID IPTV: ${esc(it.iptv_id || '—')}</div>
-                                            </td>
-                                            <td class="px-4 py-3 hidden sm:table-cell text-gray-400">${esc(it.ano || '—')}</td>
-                                            <td class="px-4 py-3 hidden md:table-cell">
-                                                ${it.editado
-                                                    ? `<span class="text-[10px] px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">EDITADO</span>`
-                                                    : `<span class="text-[10px] px-2 py-1 rounded bg-gray-500/20 text-gray-400">IPTV</span>`}
-                                            </td>
-                                            <td class="px-4 py-3 text-center">
-                                                <button onclick="event.stopPropagation();Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600 hover:bg-red-700" title="Editar">
-                                                    <i class="fa-solid fa-pen"></i>
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
+                                ${items.length === 0 ? `<tr><td colspan="5" class="text-center py-12 text-gray-500">Nenhum item</td></tr>` : items.map(it => `
+                                    <tr class="border-b border-[#1f1f1f] hover:bg-[#0f0f0f] cursor-pointer" onclick="Views.editar('${tipo}', ${it.id})">
+                                        <td class="px-4 py-3"><div class="w-10 h-14 rounded bg-gray-900 overflow-hidden">${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}</div></td>
+                                        <td class="px-4 py-3"><div class="font-medium truncate max-w-[400px]">${esc(it.titulo)}</div><div class="text-[10px] text-gray-500">ID IPTV: ${esc(it.iptv_id || '—')}</div></td>
+                                        <td class="px-4 py-3 hidden sm:table-cell text-gray-400">${esc(it.ano || '—')}</td>
+                                        <td class="px-4 py-3 hidden md:table-cell">${it.editado ? `<span class="text-[10px] px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">EDITADO</span>` : `<span class="text-[10px] px-2 py-1 rounded bg-gray-500/20 text-gray-400">IPTV</span>`}</td>
+                                        <td class="px-4 py-3 text-center"><button onclick="event.stopPropagation();Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600 hover:bg-red-700" title="Editar"><i class="fa-solid fa-pen"></i></button></td>
+                                    </tr>
+                                `).join('')}
                             </tbody>
                         </table>
                     </div>
                 </div>
-
                 <div class="flex items-center justify-between mt-4 text-sm">
                     <div class="text-gray-500 text-xs">${fmt(data.total)} itens · página ${data.page}</div>
                     <div class="flex gap-2">
-                        <button ${data.page > 1 ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page - 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40">
-                            <i class="fa-solid fa-chevron-left"></i>
-                        </button>
-                        <button ${(data.page * data.size) < data.total ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page + 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40">
-                            <i class="fa-solid fa-chevron-right"></i>
-                        </button>
+                        <button ${data.page > 1 ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page - 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40"><i class="fa-solid fa-chevron-left"></i></button>
+                        <button ${(data.page * data.size) < data.total ? '' : 'disabled'} onclick="Views._page('${tipo}', ${data.page + 1})" class="h-8 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs disabled:opacity-40"><i class="fa-solid fa-chevron-right"></i></button>
                     </div>
                 </div>
             `;
-            document.getElementById(`search-${tipo}`).onkeydown = (e) => {
-                if (e.key === 'Enter') Views._search(tipo);
-            };
+            document.getElementById(`search-${tipo}`).onkeydown = (e) => { if (e.key === 'Enter') Views._search(tipo); };
         };
-
         await load();
     },
 
-    _search(tipo) {
-        window._listState[tipo].q = document.getElementById(`search-${tipo}`).value;
-        window._listState[tipo].page = 1;
-        Router.render();
-    },
-    _page(tipo, page) {
-        window._listState[tipo].page = page;
-        Router.render();
-    },
+    _search(tipo) { window._listState[tipo].q = document.getElementById(`search-${tipo}`).value; window._listState[tipo].page = 1; Router.render(); },
+    _page(tipo, page) { window._listState[tipo].page = page; Router.render(); },
 
     async editar(tipo, id) {
         const root = document.getElementById('modal-root');
-        root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-            <div class="bg-[#141414] rounded-2xl border border-[#262626] p-8 text-center">
-                <i class="fa-solid fa-circle-notch fa-spin text-2xl text-red-500"></i>
-                <div class="text-sm text-gray-400 mt-3">Carregando...</div>
-            </div>
-        </div>`;
-
+        root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"><div class="bg-[#141414] rounded-2xl border border-[#262626] p-8 text-center"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-red-500"></i><div class="text-sm text-gray-400 mt-3">Carregando...</div></div></div>`;
         try {
             const it = await Api.adminItem(tipo, id);
             root.innerHTML = this._renderEditModal(tipo, it);
         } catch (e) {
-            root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-                <div class="bg-[#141414] rounded-2xl border border-[#262626] p-6 text-center">
-                    <div class="text-red-400 mb-4">Erro: ${esc(e.message)}</div>
-                    <button onclick="Views.fecharModal()" class="h-9 px-4 rounded-lg bg-[#1a1a1a] text-xs">Fechar</button>
-                </div>
-            </div>`;
+            root.innerHTML = `<div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"><div class="bg-[#141414] rounded-2xl border border-[#262626] p-6 text-center"><div class="text-red-400 mb-4">Erro: ${esc(e.message)}</div><button onclick="Views.fecharModal()" class="h-9 px-4 rounded-lg bg-[#1a1a1a] text-xs">Fechar</button></div></div>`;
         }
     },
 
@@ -994,162 +647,56 @@ const Views = {
         <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto" onclick="if(event.target===this)Views.fecharModal()">
             <div class="bg-[#141414] rounded-2xl w-full max-w-2xl border border-[#262626] my-8">
                 <div class="p-4 border-b border-[#262626] flex items-center justify-between sticky top-0 bg-[#141414] rounded-t-2xl">
-                    <div>
-                        <div class="text-xs text-gray-500 uppercase">Editando</div>
-                        <div class="font-bold">${tituloTipo} · ${esc(it.titulo)}</div>
-                    </div>
-                    <button onclick="Views.fecharModal()" class="w-9 h-9 rounded-lg hover:bg-[#222]">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
+                    <div><div class="text-xs text-gray-500 uppercase">Editando</div><div class="font-bold">${tituloTipo} · ${esc(it.titulo)}</div></div>
+                    <button onclick="Views.fecharModal()" class="w-9 h-9 rounded-lg hover:bg-[#222]"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <form onsubmit="Views.salvar(event, '${tipo}', ${it.id})" class="p-5 space-y-4">
-                    <div>
-                        <label class="text-xs text-gray-400 block mb-1">Título</label>
-                        <input name="titulo" value="${esc(it.titulo || '')}" class="input-dark" required>
-                    </div>
-                    ${tipo !== 'canal' ? `
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Ano</label>
-                            <input name="ano" type="number" value="${it.ano || ''}" class="input-dark">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Categoria</label>
-                            <input name="categoria" value="${esc(it.categoria || '')}" class="input-dark">
-                        </div>
-                    </div>
-                    ` : `
-                    <div>
-                        <label class="text-xs text-gray-400 block mb-1">Categoria</label>
-                        <input name="categoria" value="${esc(it.categoria || '')}" class="input-dark">
-                    </div>
-                    `}
-                    ${tipo === 'filme' || tipo === 'canal' ? `
-                    <div>
-                        <label class="text-xs text-gray-400 block mb-1">URL do stream</label>
-                        <input name="url" value="${esc(it.url || '')}" class="input-dark font-mono text-xs">
-                    </div>
-                    ` : ''}
-                    ${tipo !== 'canal' ? `
-                    <div>
-                        <label class="text-xs text-gray-400 block mb-1">Sinopse</label>
-                        <textarea name="sinopse" rows="3" class="input-dark">${esc(it.sinopse || '')}</textarea>
-                    </div>
-                    ` : ''}
+                    <div><label class="text-xs text-gray-400 block mb-1">Título</label><input name="titulo" value="${esc(it.titulo || '')}" class="input-dark" required></div>
+                    ${tipo !== 'canal' ? `<div class="grid grid-cols-2 gap-3"><div><label class="text-xs text-gray-400 block mb-1">Ano</label><input name="ano" type="number" value="${it.ano || ''}" class="input-dark"></div><div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" value="${esc(it.categoria || '')}" class="input-dark"></div></div>` : `<div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" value="${esc(it.categoria || '')}" class="input-dark"></div>`}
+                    ${tipo === 'filme' || tipo === 'canal' ? `<div><label class="text-xs text-gray-400 block mb-1">URL do stream</label><input name="url" value="${esc(it.url || '')}" class="input-dark font-mono text-xs"></div>` : ''}
+                    ${tipo !== 'canal' ? `<div><label class="text-xs text-gray-400 block mb-1">Sinopse</label><textarea name="sinopse" rows="3" class="input-dark">${esc(it.sinopse || '')}</textarea></div>` : ''}
                     <div class="border-t border-[#262626] pt-4">
                         <div class="text-xs font-bold text-gray-400 uppercase mb-3">Imagens (opcional)</div>
                         <div class="grid grid-cols-3 gap-3">
-                            <div>
-                                <label class="text-[10px] text-gray-500 block mb-1">Capa</label>
-                                ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem capa</div>'}
-                                <input name="capa" type="file" accept="image/*" class="w-full text-[10px]">
-                            </div>
-                            ${tipo !== 'canal' ? `
-                            <div>
-                                <label class="text-[10px] text-gray-500 block mb-1">Banner</label>
-                                ${it.banner ? `<img src="${esc(it.banner)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem banner</div>'}
-                                <input name="banner" type="file" accept="image/*" class="w-full text-[10px]">
-                            </div>
-                            <div>
-                                <label class="text-[10px] text-gray-500 block mb-1">Logo</label>
-                                <div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center p-2">
-                                    ${it.logo ? `<img src="${esc(it.logo)}" class="max-w-full max-h-full object-contain">` : '<span class="text-gray-600 text-[10px]">sem logo</span>'}
-                                </div>
-                                <input name="logo" type="file" accept="image/*" class="w-full text-[10px]">
-                            </div>
-                            ` : ''}
+                            <div><label class="text-[10px] text-gray-500 block mb-1">Capa</label>${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem capa</div>'}<input name="capa" type="file" accept="image/*" class="w-full text-[10px]"></div>
+                            ${tipo !== 'canal' ? `<div><label class="text-[10px] text-gray-500 block mb-1">Banner</label>${it.banner ? `<img src="${esc(it.banner)}" class="w-full h-24 object-cover rounded-lg mb-2 bg-[#0a0a0a]">` : '<div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center text-gray-600 text-[10px]">sem banner</div>'}<input name="banner" type="file" accept="image/*" class="w-full text-[10px]"></div><div><label class="text-[10px] text-gray-500 block mb-1">Logo</label><div class="w-full h-24 bg-[#0a0a0a] rounded-lg mb-2 flex items-center justify-center p-2">${it.logo ? `<img src="${esc(it.logo)}" class="max-w-full max-h-full object-contain">` : '<span class="text-gray-600 text-[10px]">sem logo</span>'}</div><input name="logo" type="file" accept="image/*" class="w-full text-[10px]"></div>` : ''}
                         </div>
                     </div>
-                    <div class="flex gap-2 pt-2">
-                        <button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button>
-                        <button type="submit" id="btn-salvar" class="flex-1 h-10 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold">
-                            <i class="fa-solid fa-floppy-disk"></i> Salvar
-                        </button>
-                    </div>
+                    <div class="flex gap-2 pt-2"><button type="button" onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button><button type="submit" id="btn-salvar" class="flex-1 h-10 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-bold"><i class="fa-solid fa-floppy-disk"></i> Salvar</button></div>
                 </form>
             </div>
         </div>`;
     },
 
     async salvar(ev, tipo, id) {
-        ev.preventDefault();
-        const form = ev.target;
-        const fd = new FormData();
-        ['titulo','ano','categoria','sinopse','url'].forEach(k => {
-            const el = form.querySelector(`[name="${k}"]`);
-            if (el && el.value) fd.append(k, el.value);
-        });
-        ['capa','banner','logo'].forEach(k => {
-            const el = form.querySelector(`[name="${k}"]`);
-            if (el && el.files[0]) fd.append(k, el.files[0]);
-        });
-        const btn = document.getElementById('btn-salvar');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Salvando...';
+        ev.preventDefault(); const form = ev.target; const fd = new FormData();
+        ['titulo','ano','categoria','sinopse','url'].forEach(k => { const el = form.querySelector(`[name="${k}"]`); if (el && el.value) fd.append(k, el.value); });
+        ['capa','banner','logo'].forEach(k => { const el = form.querySelector(`[name="${k}"]`); if (el && el.files[0]) fd.append(k, el.files[0]); });
+        const btn = document.getElementById('btn-salvar'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Salvando...';
         try {
-            const endpoint = tipo === 'filme' ? `/admin/filme/${id}`
-                          : tipo === 'serie' ? `/admin/serie/${id}`
-                          : `/admin/canal/${id}`;
-            const r = await fetch(API + endpoint, { method: 'PUT', body: fd });
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const d = await r.json();
-            Toast.show(`✅ "${d.titulo}" salvo!`, 'success');
-            Views.fecharModal();
-        } catch (e) {
-            Toast.show('Erro: ' + e.message, 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Salvar';
-        }
+            const endpoint = tipo === 'filme' ? `/admin/filme/${id}` : tipo === 'serie' ? `/admin/serie/${id}` : `/admin/canal/${id}`;
+            const r = await fetch(API + endpoint, { method: 'PUT', body: fd }); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const d = await r.json(); Toast.show(`✅ "${d.titulo}" salvo!`, 'success'); Views.fecharModal();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Salvar'; }
     },
 
     fecharModal() { document.getElementById('modal-root').innerHTML = ''; },
 
     async novidades(c) {
         const data = await Api.novidades().catch(() => ({ disponivel: false }));
-        if (!data.disponivel) {
-            c.innerHTML = `<div class="text-center py-16 text-gray-500">Nenhuma detecção ainda.</div>`;
-            return;
-        }
+        if (!data.disponivel) { c.innerHTML = `<div class="text-center py-16 text-gray-500">Nenhuma detecção ainda.</div>`; return; }
         const t = data.totais || {};
-        c.innerHTML = `
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-                ${this.statCard('Filmes novos', fmt(t.filmes_novos), 'fa-film', 'text-blue-400')}
-                ${this.statCard('Séries novas', fmt(t.series_novas), 'fa-tv', 'text-purple-400')}
-                ${this.statCard('Canais novos', fmt(t.canais_novos), 'fa-satellite-dish', 'text-green-400')}
-                ${this.statCard('Lançamentos', fmt(t.lancamentos), 'fa-star', 'text-yellow-400')}
-            </div>
-            <div class="text-xs text-gray-500">
-                <i class="fa-solid fa-clock mr-1"></i> Detectado em ${esc(data.detectado_em_str || '—')}
-            </div>
-        `;
+        c.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">${this.statCard('Filmes novos', fmt(t.filmes_novos), 'fa-film', 'text-blue-400')}${this.statCard('Séries novas', fmt(t.series_novas), 'fa-tv', 'text-purple-400')}${this.statCard('Canais novos', fmt(t.canais_novos), 'fa-satellite-dish', 'text-green-400')}${this.statCard('Lançamentos', fmt(t.lancamentos), 'fa-star', 'text-yellow-400')}</div><div class="text-xs text-gray-500"><i class="fa-solid fa-clock mr-1"></i> Detectado em ${esc(data.detectado_em_str || '—')}</div>`;
     },
 
     async proxy(c) {
         const p = await Api.proxyStats().catch(() => ({}));
-        c.innerHTML = `
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-                ${this.statCard('Slugs', fmt(p.slugs_carregados), 'fa-link', 'text-blue-400')}
-                ${this.statCard('Streams ativos', fmt(p.ativo_total), 'fa-play', 'text-green-400')}
-                ${this.statCard('Limite global', fmt(p.limite_total), 'fa-gauge', 'text-yellow-400')}
-                ${this.statCard('IPs', fmt(p.ips_conectados), 'fa-network-wired', 'text-purple-400')}
-            </div>
-        `;
+        c.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">${this.statCard('Slugs', fmt(p.slugs_carregados), 'fa-link', 'text-blue-400')}${this.statCard('Streams ativos', fmt(p.ativo_total), 'fa-play', 'text-green-400')}${this.statCard('Limite global', fmt(p.limite_total), 'fa-gauge', 'text-yellow-400')}${this.statCard('IPs', fmt(p.ips_conectados), 'fa-network-wired', 'text-purple-400')}</div>`;
     },
 
     async sistema(c) {
         const s = await Api.status().catch(() => ({}));
-        c.innerHTML = `
-            <div class="stat-card rounded-xl p-4">
-                <div class="text-xs font-semibold text-gray-400 uppercase mb-3">Estado</div>
-                <div class="space-y-2 text-xs">
-                    <div class="flex justify-between"><span class="text-gray-500">Cache M3U</span><span>${s.valid ? '✅ Válido' : '⚠️ Expirado'}</span></div>
-                    <div class="flex justify-between"><span class="text-gray-500">Auto-refresh</span><span>${s.auto_refresh_ativo ? '✅ Ativo' : '❌ Parado'}</span></div>
-                    <div class="flex justify-between"><span class="text-gray-500">TMDB</span><span>${s.tmdb_ativo ? '✅ Ativo' : '❌ Off'}</span></div>
-                    <div class="flex justify-between"><span class="text-gray-500">Clientes WS</span><span>${s.ws_clientes || 0}</span></div>
-                    <div class="flex justify-between"><span class="text-gray-500">URL pública</span><span class="font-mono text-[10px]">${esc(s.public_base_url || '—')}</span></div>
-                </div>
-            </div>
-        `;
+        c.innerHTML = `<div class="stat-card rounded-xl p-4"><div class="text-xs font-semibold text-gray-400 uppercase mb-3">Estado</div><div class="space-y-2 text-xs"><div class="flex justify-between"><span class="text-gray-500">Cache M3U</span><span>${s.valid ? '✅ Válido' : '⚠️ Expirado'}</span></div><div class="flex justify-between"><span class="text-gray-500">Auto-refresh</span><span>${s.auto_refresh_ativo ? '✅ Ativo' : '❌ Parado'}</span></div><div class="flex justify-between"><span class="text-gray-500">TMDB</span><span>${s.tmdb_ativo ? '✅ Ativo' : '❌ Off'}</span></div><div class="flex justify-between"><span class="text-gray-500">Clientes WS</span><span>${s.ws_clientes || 0}</span></div><div class="flex justify-between"><span class="text-gray-500">URL pública</span><span class="font-mono text-[10px]">${esc(s.public_base_url || '—')}</span></div></div></div>`;
     }
 };
 
@@ -1158,36 +705,59 @@ const Actions = {
         if (!confirm('Isso vai baixar TODO o catálogo novamente e recriar o banco de dados. Pode demorar alguns minutos. Deseja continuar?')) return;
         
         const btn = document.getElementById('btn-force-sync');
-        const prog = document.getElementById('sync-progress');
+        const logsArea = document.getElementById('sync-logs-area');
         
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Iniciando...';
-        prog.classList.remove('hidden');
+        logsArea.classList.remove('hidden');
+        logsArea.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
         
         try {
             const r = await Api.forceSync();
             if (!r.ok) throw new Error(r.msg);
             Toast.show('🚀 Sincronização iniciada! Aguarde...', 'info', 5000);
             
-            // Fica checando o status a cada 3 segundos
-            const timer = setInterval(async () => {
-                const st = await Api.forceSyncStatus();
-                if (!st.ativo) {
-                    clearInterval(timer);
-                    Toast.show(`✅ Catálogo atualizado! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000);
-                    btn.disabled = false;
-                    btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
-                    prog.classList.add('hidden');
-                    Router.render();
-                }
-            }, 3000);
-            
+            this.pollSync();
         } catch (e) {
             Toast.show('Erro: ' + e.message, 'error', 5000);
             btn.disabled = false;
             btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
-            prog.classList.add('hidden');
+            logsArea.classList.add('hidden');
         }
+    },
+
+    async pollSync() {
+        const timer = setInterval(async () => {
+            try {
+                const st = await Api.forceSyncStatus();
+                const logsArea = document.getElementById('sync-logs-area');
+                
+                if (logsArea) {
+                    logsArea.innerHTML = st.logs.map(l => `<div>${esc(l)}</div>`).join('');
+                    logsArea.scrollTop = logsArea.scrollHeight; // Rola para o final
+                }
+
+                if (!st.ativo) {
+                    clearInterval(timer);
+                    const btn = document.getElementById('btn-force-sync');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
+                    }
+                    
+                    const lastLog = st.logs[st.logs.length - 1] || "";
+                    if (lastLog.includes("[!]")) {
+                        Toast.show(`❌ Falha na sincronização. Verifique os logs.`, 'error', 8000);
+                    } else {
+                        Toast.show(`✅ Catálogo atualizado! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000);
+                    }
+                    
+                    if (Router.current === 'dashboard') Router.render();
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }, 2000);
     }
 };
 
