@@ -3,6 +3,7 @@ import json
 import secrets
 import time
 import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -39,7 +40,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.5.0")
+app = FastAPI(title="IPTV Organizer Pro", version="9.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,8 +68,6 @@ _AUTO_REFRESH_TASK = None
 _HOME_CACHE: dict = {}
 _HOME_CACHE_TS: float = 0
 _HOME_CACHE_TTL = 300
-
-# Variável para controlar se uma sincronização forçada está rodando
 _SYNC_ATIVO = False
 
 
@@ -138,6 +137,12 @@ async def fetch_and_rebuild(force: bool = False):
     filmes, series, canais = await asyncio.gather(
         fetch_filmes(), fetch_series(), fetch_canais(),
     )
+    
+    # ⚡ PROTEÇÃO: Se o provedor falhar e voltar vazio, NÃO apaga o banco atual.
+    if not filmes and not series and not canais:
+        print("[!] ERRO CRÍTICO: O provedor IPTV retornou listas vazias. Mantendo banco antigo.")
+        return
+
     _FILMES = filmes
     _SERIES = series
     _CANAIS = canais
@@ -214,6 +219,11 @@ async def auto_refresh_loop():
             filmes, series, canais = await asyncio.gather(
                 fetch_filmes(), fetch_series(), fetch_canais(),
             )
+            # Proteção contra lista vazia
+            if not filmes and not series and not canais:
+                print("[!] Provedor falhou no auto-refresh. Mantendo dados atuais.")
+                continue
+                
             _FILMES, _SERIES, _CANAIS = filmes, series, canais
             nov = await detectar_novidades(fa, sa, ca)
             _save_all()
@@ -252,6 +262,20 @@ def _card(item, tipo=None):
         "capa": item.get("capa"),
         "ano": item.get("ano"),
     }
+
+
+# ==========================================================
+# BUSCA INTELIGENTE (Remove acentos e artigos)
+# ==========================================================
+def _normalizar_busca(texto: str) -> str:
+    if not texto: return ""
+    # Remove acentos
+    t = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii').lower()
+    # Remove pontuações
+    t = re.sub(r'[^a-z0-9\s]', ' ', t)
+    # Remove artigos comuns (o, a, os, as, the, um, uma)
+    t = re.sub(r'\b(the|os|as|o|a|um|uma|de|do|da)\b', ' ', t)
+    return " ".join(t.split())
 
 
 # ==========================================================
@@ -309,7 +333,7 @@ def root():
     idx = BASE_DIR / "index.html"
     if idx.exists():
         return FileResponse(idx)
-    return {"service": "IPTV Organizer Pro", "version": "9.5.0"}
+    return {"service": "IPTV Organizer Pro", "version": "9.6.0"}
 
 @app.get("/status")
 async def status():
@@ -341,7 +365,6 @@ async def _rodar_sync_bg():
     _SYNC_ATIVO = True
     print("\n[•] Sincronização forçada solicitada pelo painel...")
     try:
-        # Força a limpeza do cache em disco e baixa tudo de novo
         if META_FILE.exists(): META_FILE.unlink()
         await fetch_and_rebuild(force=True)
         print("[✓] Sincronização forçada concluída com sucesso!")
@@ -363,7 +386,7 @@ async def force_sync_status():
 
 
 # ==========================================================
-# LISTAGENS
+# LISTAGENS E BUSCA
 # ==========================================================
 @app.get("/home")
 async def home(force: bool = False):
@@ -416,15 +439,27 @@ def listar_canais(page: int = Query(1, ge=1),
 def buscar(q: str = Query(..., min_length=1), tipo: str | None = None,
            page: int = Query(1, ge=1),
            size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)):
-    ql = q.lower()
-    r = []
+    
+    q_raw = q.lower().strip()
+    q_norm = _normalizar_busca(q)
+    resultados = []
+
+    def match(item):
+        tit = item.get("titulo") or ""
+        if q_raw in tit.lower():
+            return True
+        if q_norm and q_norm in _normalizar_busca(tit):
+            return True
+        return False
+
     if tipo in (None, "filme"):
-        r += [_card(f, "filme") for f in _FILMES if ql in (f.get("titulo") or "").lower()]
+        resultados += [_card(f, "filme") for f in _FILMES if match(f)]
     if tipo in (None, "serie"):
-        r += [_card(s, "serie") for s in _SERIES if ql in (s.get("titulo") or "").lower()]
+        resultados += [_card(s, "serie") for s in _SERIES if match(s)]
     if tipo in (None, "canal"):
-        r += [_card(c, "canal") for c in _CANAIS if ql in (c.get("titulo") or "").lower()]
-    return paginate(r, page, size)
+        resultados += [_card(c, "canal") for c in _CANAIS if match(c)]
+        
+    return paginate(resultados, page, size)
 
 @app.get("/categorias")
 def categorias():
@@ -454,6 +489,9 @@ async def verificar_novidades():
         filmes, series, canais = await asyncio.gather(
             fetch_filmes(), fetch_series(), fetch_canais(),
         )
+        if not filmes and not series and not canais:
+            raise Exception("Provedor retornou listas vazias.")
+            
         _FILMES, _SERIES, _CANAIS = filmes, series, canais
         nov = await detectar_novidades(fa, sa, ca)
         NOVIDADES_FILE.write_text(
