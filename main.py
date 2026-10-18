@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from config import (
-    CACHE_TTL, BASE_DIR,
+    CACHE_TTL, BASE_DIR, CACHE_DIR,
     FILMES_FILE, SERIES_FILE, CANAIS_FILE,
     META_FILE, NOVIDADES_FILE,
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PORT,
@@ -36,13 +36,13 @@ from proxy import (
 import tmdb
 
 from db import (
-    criar_tabelas, sincronizar, SessionLocal, get_db,
+    criar_tabelas, sincronizar, SessionLocal, get_db, engine, Base,
     Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB,
 )
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.7.1")
+app = FastAPI(title="IPTV Organizer Pro", version="9.8.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -271,7 +271,7 @@ async def status():
 async def _rodar_sync_bg():
     global _SYNC_ATIVO, _SYNC_LOGS
     _SYNC_ATIVO = True
-    _SYNC_LOGS = [] 
+    _SYNC_LOGS = ["[•] Iniciando sincronização forçada..."]
     try:
         if META_FILE.exists(): META_FILE.unlink()
         await fetch_and_rebuild(force=True)
@@ -281,11 +281,46 @@ async def _rodar_sync_bg():
     finally:
         _SYNC_ATIVO = False
 
+async def _wipe_all_bg():
+    global _SYNC_ATIVO, _SYNC_LOGS, _FILMES, _SERIES, _CANAIS
+    _SYNC_ATIVO = True
+    _SYNC_LOGS = ["[!] INICIANDO LIMPEZA TOTAL DO SISTEMA..."]
+    try:
+        # 1. Apaga JSONs e Cache
+        for f in [FILMES_FILE, SERIES_FILE, CANAIS_FILE, META_FILE, NOVIDADES_FILE]:
+            if f.exists(): f.unlink()
+        for f in CACHE_DIR.glob("slug_map_*.json"):
+            f.unlink()
+        if (CACHE_DIR / "hero_cache.json").exists():
+            (CACHE_DIR / "hero_cache.json").unlink()
+            
+        # 2. Apaga o Banco de Dados Inteiro
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        _SYNC_LOGS.append("[✓] Banco de dados e cache apagados.")
+
+        # 3. Limpa Memória
+        _FILMES, _SERIES, _CANAIS = [], [], []
+        _SYNC_LOGS.append("[•] Baixando TUDO do servidor IPTV novamente...")
+        
+        await fetch_and_rebuild(force=True)
+    except Exception as e:
+        _SYNC_LOGS.append(f"[!] Erro na limpeza: {e}")
+        print(f"[!] Erro na limpeza: {e}")
+    finally:
+        _SYNC_ATIVO = False
+
 @app.post("/admin/force-sync")
 async def force_sync():
     if _SYNC_ATIVO: return {"ok": False, "msg": "Já existe uma sincronização em andamento."}
     asyncio.create_task(_rodar_sync_bg())
     return {"ok": True, "msg": "Sincronização total iniciada em segundo plano."}
+
+@app.post("/admin/wipe-all")
+async def wipe_all():
+    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a sincronização atual terminar."}
+    asyncio.create_task(_wipe_all_bg())
+    return {"ok": True, "msg": "Limpando tudo e baixando novamente..."}
 
 @app.get("/admin/force-sync/status")
 async def force_sync_status():

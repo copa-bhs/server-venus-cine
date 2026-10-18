@@ -187,6 +187,7 @@ const Api = {
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
     forceSync() { return this.post('/admin/force-sync'); },
+    wipeAll() { return this.post('/admin/wipe-all'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); }
 };
 
@@ -254,24 +255,27 @@ const Views = {
                 ${this.statCard('Slugs proxy', fmt(proxy.slugs_carregados), 'fa-link', 'text-yellow-400')}
             </div>
 
-            <!-- CARD DE SINCRONIZAÇÃO FORÇADA -->
+            <!-- CARD DE SINCRONIZAÇÃO E LIMPEZA -->
             <div class="stat-card rounded-xl p-5 mb-6 border-red-600/30 bg-red-600/5">
-                <div class="flex flex-col md:flex-row items-center gap-4">
+                <div class="flex flex-col md:flex-row items-center gap-4 mb-4">
                     <div class="w-14 h-14 rounded-full bg-red-600/20 flex items-center justify-center flex-shrink-0">
                         <i class="fa-solid fa-arrows-rotate text-red-500 text-xl" id="sync-icon"></i>
                     </div>
                     <div class="flex-1 text-center md:text-left">
-                        <h3 class="text-sm font-bold text-white mb-1">Forçar Atualização do Catálogo</h2>
-                        <p class="text-xs text-gray-400">Baixa todos os filmes, séries e canais do servidor IPTV novamente e recria o banco de dados do zero. Use isso se notar que faltam filmes no aplicativo.</p>
+                        <h3 class="text-sm font-bold text-white mb-1">Gerenciar Catálogo</h2>
+                        <p class="text-xs text-gray-400">Baixe as atualizações ou faça uma limpeza total no banco de dados.</p>
                     </div>
-                    <button id="btn-force-sync" onclick="Actions.forceSync()" class="h-10 px-6 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center gap-2 w-full md:w-auto justify-center">
-                        <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora
-                    </button>
+                    <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                        <button id="btn-force-sync" onclick="Actions.forceSync()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] hover:bg-[#222] text-xs font-bold flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar
+                        </button>
+                        <button id="btn-wipe-all" onclick="Actions.wipeAll()" class="h-10 px-4 rounded-lg bg-red-900/50 border border-red-700/50 hover:bg-red-800 text-red-400 hover:text-white text-xs font-bold flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-trash"></i> Apagar Tudo
+                        </button>
+                    </div>
                 </div>
                 
-                <!-- TERMINAL DE LOGS -->
-                <div id="sync-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-40 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1">
-                </div>
+                <div id="sync-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-48 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1"></div>
             </div>
 
             <div class="grid md:grid-cols-3 gap-4 mb-6">
@@ -302,14 +306,12 @@ const Views = {
         if (s.sync_ativo) {
             document.getElementById('sync-logs-area').classList.remove('hidden');
             document.getElementById('btn-force-sync').disabled = true;
+            document.getElementById('btn-wipe-all').disabled = true;
             document.getElementById('btn-force-sync').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizando...';
             Actions.pollSync();
         }
     },
 
-    // ============================================================
-    // NOTIFICAÇÕES INTELIGENTES
-    // ============================================================
     async notificacoes(c) {
         c.innerHTML = `
             <div class="grid md:grid-cols-2 gap-6">
@@ -702,28 +704,31 @@ const Views = {
 
 const Actions = {
     async forceSync() {
-        if (!confirm('Isso vai baixar TODO o catálogo novamente e recriar o banco de dados. Pode demorar alguns minutos. Deseja continuar?')) return;
-        
-        const btn = document.getElementById('btn-force-sync');
-        const logsArea = document.getElementById('sync-logs-area');
-        
-        btn.disabled = true;
+        if (!confirm('Isso vai baixar TODO o catálogo novamente. Pode demorar alguns minutos. Deseja continuar?')) return;
+        const btn = document.getElementById('btn-force-sync'); const logsArea = document.getElementById('sync-logs-area');
+        btn.disabled = true; document.getElementById('btn-wipe-all').disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Iniciando...';
-        logsArea.classList.remove('hidden');
-        logsArea.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
-        
+        logsArea.classList.remove('hidden'); logsArea.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
         try {
             const r = await Api.forceSync();
             if (!r.ok) throw new Error(r.msg);
-            Toast.show('🚀 Sincronização iniciada! Aguarde...', 'info', 5000);
-            
+            Toast.show('🚀 Sincronização iniciada!', 'info', 5000);
             this.pollSync();
-        } catch (e) {
-            Toast.show('Erro: ' + e.message, 'error', 5000);
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
-            logsArea.classList.add('hidden');
-        }
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error', 5000); btn.disabled = false; document.getElementById('btn-wipe-all').disabled = false; btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar'; logsArea.classList.add('hidden'); }
+    },
+
+    async wipeAll() {
+        if (!confirm('⚠️ ATENÇÃO: Isso vai APAGAR todos os filmes, séries, canais, capas editadas e o banco de dados inteiro. O sistema vai baixar tudo do zero. Tem certeza?')) return;
+        const btn = document.getElementById('btn-wipe-all'); const logsArea = document.getElementById('sync-logs-area');
+        btn.disabled = true; document.getElementById('btn-force-sync').disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
+        logsArea.classList.remove('hidden'); logsArea.innerHTML = '<div class="text-red-500 font-bold">LIMPANDO O SISTEMA...</div>';
+        try {
+            const r = await Api.wipeAll();
+            if (!r.ok) throw new Error(r.msg);
+            Toast.show('🚨 Limpeza iniciada! Baixando tudo novamente...', 'warn', 6000);
+            this.pollSync();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error', 5000); btn.disabled = false; document.getElementById('btn-force-sync').disabled = false; btn.innerHTML = '<i class="fa-solid fa-trash"></i> Apagar Tudo'; logsArea.classList.add('hidden'); }
     },
 
     async pollSync() {
@@ -731,32 +736,18 @@ const Actions = {
             try {
                 const st = await Api.forceSyncStatus();
                 const logsArea = document.getElementById('sync-logs-area');
-                
-                if (logsArea) {
-                    logsArea.innerHTML = st.logs.map(l => `<div>${esc(l)}</div>`).join('');
-                    logsArea.scrollTop = logsArea.scrollHeight; // Rola para o final
-                }
-
+                if (logsArea) { logsArea.innerHTML = st.logs.map(l => `<div>${esc(l)}</div>`).join(''); logsArea.scrollTop = logsArea.scrollHeight; }
                 if (!st.ativo) {
                     clearInterval(timer);
-                    const btn = document.getElementById('btn-force-sync');
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
-                    }
-                    
+                    const btnS = document.getElementById('btn-force-sync'); const btnW = document.getElementById('btn-wipe-all');
+                    if (btnS) { btnS.disabled = false; btnS.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar'; }
+                    if (btnW) { btnW.disabled = false; btnW.innerHTML = '<i class="fa-solid fa-trash"></i> Apagar Tudo'; }
                     const lastLog = st.logs[st.logs.length - 1] || "";
-                    if (lastLog.includes("[!]")) {
-                        Toast.show(`❌ Falha na sincronização. Verifique os logs.`, 'error', 8000);
-                    } else {
-                        Toast.show(`✅ Catálogo atualizado! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000);
-                    }
-                    
+                    if (lastLog.includes("[!]")) { Toast.show(`❌ Falha na operação. Verifique os logs.`, 'error', 8000); }
+                    else { Toast.show(`✅ Concluído! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000); }
                     if (Router.current === 'dashboard') Router.render();
                 }
-            } catch (e) {
-                console.error(e);
-            }
+            } catch (e) { console.error(e); }
         }, 2000);
     }
 };
