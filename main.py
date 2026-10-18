@@ -37,11 +37,9 @@ from db import (
     Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB,
 )
 from websocket_manager import manager
-
-# ⚠️ IMPORTAÇÃO DO NOVO ROUTER DE NOTIFICAÇÕES
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.2.0")
+app = FastAPI(title="IPTV Organizer Pro", version="9.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +51,6 @@ app.add_middleware(
     max_age=3600,
 )
 
-# ⚠️ REGISTRO DO ROUTER DE NOTIFICAÇÕES
 app.include_router(notificacoes_router)
 
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -70,6 +67,9 @@ _AUTO_REFRESH_TASK = None
 _HOME_CACHE: dict = {}
 _HOME_CACHE_TS: float = 0
 _HOME_CACHE_TTL = 300
+
+# Variável para controlar se uma sincronização forçada está rodando
+_SYNC_ATIVO = False
 
 
 def _stats() -> dict:
@@ -302,18 +302,68 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ==========================================================
-# RAIZ
+# RAIZ E STATUS
 # ==========================================================
 @app.get("/")
 def root():
     idx = BASE_DIR / "index.html"
     if idx.exists():
         return FileResponse(idx)
-    return {"service": "IPTV Organizer Pro", "version": "9.2.0"}
+    return {"service": "IPTV Organizer Pro", "version": "9.5.0"}
+
+@app.get("/status")
+async def status():
+    meta = {}
+    if META_FILE.exists():
+        try:
+            meta = json.loads(META_FILE.read_text())
+        except Exception:
+            pass
+    idade = time.time() - meta.get("timestamp", 0) if meta else 0
+    return {
+        "cached": bool(meta), "age_seconds": int(idade),
+        "ttl_seconds": CACHE_TTL, "valid": idade < CACHE_TTL,
+        "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
+        "sync_ativo": _SYNC_ATIVO,
+        "tmdb_ativo": TMDB_ENABLED,
+        "storage": "3 JSONs + SQLite",
+        "public_base_url": PUBLIC_BASE_URL,
+        "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()},
+        "stats": _stats(),
+        "ws_clientes": manager.total(),
+    }
+
+# ==========================================================
+# FORÇAR SINCRONIZAÇÃO TOTAL (BACKGROUND)
+# ==========================================================
+async def _rodar_sync_bg():
+    global _SYNC_ATIVO
+    _SYNC_ATIVO = True
+    print("\n[•] Sincronização forçada solicitada pelo painel...")
+    try:
+        # Força a limpeza do cache em disco e baixa tudo de novo
+        if META_FILE.exists(): META_FILE.unlink()
+        await fetch_and_rebuild(force=True)
+        print("[✓] Sincronização forçada concluída com sucesso!")
+    except Exception as e:
+        print(f"[!] Erro na sincronização forçada: {e}")
+    finally:
+        _SYNC_ATIVO = False
+
+@app.post("/admin/force-sync")
+async def force_sync():
+    if _SYNC_ATIVO:
+        return {"ok": False, "msg": "Já existe uma sincronização em andamento."}
+    asyncio.create_task(_rodar_sync_bg())
+    return {"ok": True, "msg": "Sincronização total iniciada em segundo plano."}
+
+@app.get("/admin/force-sync/status")
+async def force_sync_status():
+    return {"ativo": _SYNC_ATIVO, "stats": _stats()}
 
 
 # ==========================================================
-# HOME / STATUS / REFRESH
+# LISTAGENS
 # ==========================================================
 @app.get("/home")
 async def home(force: bool = False):
@@ -329,40 +379,61 @@ async def home(force: bool = False):
     _HOME_CACHE_TS = time.time()
     return _HOME_CACHE
 
+@app.get("/filmes")
+def listar_filmes(page: int = Query(1, ge=1),
+                  size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                  categoria: str | None = None):
+    filmes = _FILMES
+    if categoria:
+        filmes = [f for f in filmes if f["categoria"].lower() == categoria.lower()]
+    resp = paginate(filmes, page, size)
+    resp["items"] = [_card(it, "filme") for it in resp["items"]]
+    return resp
 
-@app.get("/status")
-async def status():
-    meta = {}
-    if META_FILE.exists():
-        try:
-            meta = json.loads(META_FILE.read_text())
-        except Exception:
-            pass
-    idade = time.time() - meta.get("timestamp", 0) if meta else 0
+@app.get("/series")
+def listar_series(page: int = Query(1, ge=1),
+                  size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                  categoria: str | None = None):
+    series = _SERIES
+    if categoria:
+        series = [s for s in series if s["categoria"].lower() == categoria.lower()]
+    resp = paginate(series, page, size)
+    resp["items"] = [_card(it, "serie") for it in resp["items"]]
+    return resp
+
+@app.get("/canais")
+def listar_canais(page: int = Query(1, ge=1),
+                  size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+                  categoria: str | None = None):
+    canais = _CANAIS
+    if categoria:
+        canais = [c for c in canais if c["categoria"].lower() == categoria.lower()]
+    resp = paginate(canais, page, size)
+    resp["items"] = [_card(it, "canal") for it in resp["items"]]
+    return resp
+
+@app.get("/buscar")
+def buscar(q: str = Query(..., min_length=1), tipo: str | None = None,
+           page: int = Query(1, ge=1),
+           size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)):
+    ql = q.lower()
+    r = []
+    if tipo in (None, "filme"):
+        r += [_card(f, "filme") for f in _FILMES if ql in (f.get("titulo") or "").lower()]
+    if tipo in (None, "serie"):
+        r += [_card(s, "serie") for s in _SERIES if ql in (s.get("titulo") or "").lower()]
+    if tipo in (None, "canal"):
+        r += [_card(c, "canal") for c in _CANAIS if ql in (c.get("titulo") or "").lower()]
+    return paginate(r, page, size)
+
+@app.get("/categorias")
+def categorias():
     return {
-        "cached": bool(meta), "age_seconds": int(idade),
-        "ttl_seconds": CACHE_TTL, "valid": idade < CACHE_TTL,
-        "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
-        "tmdb_ativo": TMDB_ENABLED,
-        "storage": "3 JSONs + SQLite",
-        "public_base_url": PUBLIC_BASE_URL,
-        "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()},
-        "stats": _stats(),
-        "ws_clientes": manager.total(),
+        "filmes": sorted({f["categoria"] for f in _FILMES if f.get("categoria")}),
+        "series": sorted({s["categoria"] for s in _SERIES if s.get("categoria")}),
+        "canais": sorted({c["categoria"] for c in _CANAIS if c.get("categoria")}),
     }
 
-
-@app.post("/refresh")
-async def refresh():
-    global _HOME_CACHE_TS
-    await fetch_and_rebuild(force=True)
-    _HOME_CACHE_TS = 0
-    return {"ok": True, "stats": _stats()}
-
-
-# ==========================================================
-# NOVIDADES
-# ==========================================================
 @app.get("/novidades")
 def novidades():
     if not NOVIDADES_FILE.exists():
@@ -373,7 +444,6 @@ def novidades():
         return {"disponivel": False, "mensagem": "Erro ao ler."}
     data["disponivel"] = True
     return data
-
 
 @app.post("/novidades/verificar")
 async def verificar_novidades():
@@ -391,77 +461,12 @@ async def verificar_novidades():
             encoding="utf-8")
         logar_novidades(nov)
         await manager.broadcast("novidades", nov["totais"])
-        return {"ok": True, "duracao_segundos": round(time.time() - t0, 2),
-                "totais": nov["totais"]}
+        return {"ok": True, "duracao_segundos": round(time.time() - t0, 2), "totais": nov["totais"]}
     except Exception as e:
         raise HTTPException(500, f"Erro: {e}")
 
-
 # ==========================================================
-# LISTAGENS
-# ==========================================================
-@app.get("/filmes")
-def listar_filmes(page: int = Query(1, ge=1),
-                  size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
-                  categoria: str | None = None):
-    filmes = _FILMES
-    if categoria:
-        filmes = [f for f in filmes if f["categoria"].lower() == categoria.lower()]
-    resp = paginate(filmes, page, size)
-    resp["items"] = [_card(it, "filme") for it in resp["items"]]
-    return resp
-
-
-@app.get("/series")
-def listar_series(page: int = Query(1, ge=1),
-                  size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
-                  categoria: str | None = None):
-    series = _SERIES
-    if categoria:
-        series = [s for s in series if s["categoria"].lower() == categoria.lower()]
-    resp = paginate(series, page, size)
-    resp["items"] = [_card(it, "serie") for it in resp["items"]]
-    return resp
-
-
-@app.get("/canais")
-def listar_canais(page: int = Query(1, ge=1),
-                  size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
-                  categoria: str | None = None):
-    canais = _CANAIS
-    if categoria:
-        canais = [c for c in canais if c["categoria"].lower() == categoria.lower()]
-    resp = paginate(canais, page, size)
-    resp["items"] = [_card(it, "canal") for it in resp["items"]]
-    return resp
-
-
-@app.get("/buscar")
-def buscar(q: str = Query(..., min_length=1), tipo: str | None = None,
-           page: int = Query(1, ge=1),
-           size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)):
-    ql = q.lower()
-    r = []
-    if tipo in (None, "filme"):
-        r += [_card(f, "filme") for f in _FILMES if ql in (f.get("titulo") or "").lower()]
-    if tipo in (None, "serie"):
-        r += [_card(s, "serie") for s in _SERIES if ql in (s.get("titulo") or "").lower()]
-    if tipo in (None, "canal"):
-        r += [_card(c, "canal") for c in _CANAIS if ql in (c.get("titulo") or "").lower()]
-    return paginate(r, page, size)
-
-
-@app.get("/categorias")
-def categorias():
-    return {
-        "filmes": sorted({f["categoria"] for f in _FILMES if f.get("categoria")}),
-        "series": sorted({s["categoria"] for s in _SERIES if s.get("categoria")}),
-        "canais": sorted({c["categoria"] for c in _CANAIS if c.get("categoria")}),
-    }
-
-
-# ==========================================================
-# INFO
+# INFO E PROXY
 # ==========================================================
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, force: bool = False):
@@ -474,7 +479,6 @@ async def info_filme(filme_id: str, force: bool = False):
     except httpx.RequestError as e:
         raise HTTPException(502, f"Falha: {e}")
 
-
 @app.get("/info/serie/{serie_id}")
 async def info_serie(serie_id: str, force: bool = False):
     try:
@@ -486,99 +490,56 @@ async def info_serie(serie_id: str, force: bool = False):
     except httpx.RequestError as e:
         raise HTTPException(502, f"Falha: {e}")
 
-
 # ==========================================================
-# ADMIN — BUSCAR NO BANCO
+# ADMIN (EDITOR E SLIDER)
 # ==========================================================
 @app.get("/admin/filmes")
-def admin_filmes(q: str | None = None, page: int = 1, size: int = 30,
-                 db: Session = Depends(get_db)):
+def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(FilmeDB)
-    if q:
-        query = query.filter(FilmeDB.titulo.ilike(f"%{q}%"))
+    if q: query = query.filter(FilmeDB.titulo.ilike(f"%{q}%"))
     total = query.count()
     itens = query.order_by(FilmeDB.titulo).offset((page - 1) * size).limit(size).all()
-    return {"total": total, "page": page, "size": size,
-            "items": [{"id": f.id, "iptv_id": f.iptv_id, "titulo": f.titulo,
-                       "capa": f.capa, "banner": f.banner, "logo": f.logo,
-                       "ano": f.ano, "categoria": f.categoria, "sinopse": f.sinopse,
-                       "url": f.url, "editado": f.editado} for f in itens]}
-
+    return {"total": total, "page": page, "size": size, "items": [{"id": f.id, "iptv_id": f.iptv_id, "titulo": f.titulo, "capa": f.capa, "banner": f.banner, "logo": f.logo, "ano": f.ano, "categoria": f.categoria, "sinopse": f.sinopse, "url": f.url, "editado": f.editado} for f in itens]}
 
 @app.get("/admin/series")
-def admin_series(q: str | None = None, page: int = 1, size: int = 30,
-                 db: Session = Depends(get_db)):
+def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(SerieDB)
-    if q:
-        query = query.filter(SerieDB.titulo.ilike(f"%{q}%"))
+    if q: query = query.filter(SerieDB.titulo.ilike(f"%{q}%"))
     total = query.count()
     itens = query.order_by(SerieDB.titulo).offset((page - 1) * size).limit(size).all()
-    return {"total": total, "page": page, "size": size,
-            "items": [{"id": s.id, "iptv_id": s.iptv_id, "titulo": s.titulo,
-                       "capa": s.capa, "banner": s.banner, "logo": s.logo,
-                       "ano": s.ano, "categoria": s.categoria, "sinopse": s.sinopse,
-                       "editado": s.editado} for s in itens]}
-
+    return {"total": total, "page": page, "size": size, "items": [{"id": s.id, "iptv_id": s.iptv_id, "titulo": s.titulo, "capa": s.capa, "banner": s.banner, "logo": s.logo, "ano": s.ano, "categoria": s.categoria, "sinopse": s.sinopse, "editado": s.editado} for s in itens]}
 
 @app.get("/admin/canais")
-def admin_canais(q: str | None = None, page: int = 1, size: int = 30,
-                 db: Session = Depends(get_db)):
+def admin_canais(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(CanalDB)
-    if q:
-        query = query.filter(CanalDB.titulo.ilike(f"%{q}%"))
+    if q: query = query.filter(CanalDB.titulo.ilike(f"%{q}%"))
     total = query.count()
     itens = query.order_by(CanalDB.titulo).offset((page - 1) * size).limit(size).all()
-    return {"total": total, "page": page, "size": size,
-            "items": [{"id": c.id, "iptv_id": c.iptv_id, "titulo": c.titulo,
-                       "capa": c.capa, "categoria": c.categoria,
-                       "url": c.url, "editado": c.editado} for c in itens]}
-
+    return {"total": total, "page": page, "size": size, "items": [{"id": c.id, "iptv_id": c.iptv_id, "titulo": c.titulo, "capa": c.capa, "categoria": c.categoria, "url": c.url, "editado": c.editado} for c in itens]}
 
 @app.get("/admin/item/{tipo}/{item_id}")
 def admin_item(tipo: str, item_id: int, db: Session = Depends(get_db)):
-    if tipo == "filme":
-        it = db.query(FilmeDB).get(item_id)
-    elif tipo == "serie":
-        it = db.query(SerieDB).get(item_id)
-    elif tipo == "canal":
-        it = db.query(CanalDB).get(item_id)
-    else:
-        raise HTTPException(400, "tipo inválido")
-    if not it:
-        raise HTTPException(404, "não encontrado")
+    if tipo == "filme": it = db.query(FilmeDB).get(item_id)
+    elif tipo == "serie": it = db.query(SerieDB).get(item_id)
+    elif tipo == "canal": it = db.query(CanalDB).get(item_id)
+    else: raise HTTPException(400, "tipo inválido")
+    if not it: raise HTTPException(404, "não encontrado")
     return {c.name: getattr(it, c.name) for c in it.__table__.columns}
 
-
 async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
-    if not arq or not arq.filename:
-        return None
+    if not arq or not arq.filename: return None
     ext = Path(arq.filename).suffix.lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        raise HTTPException(400, f"Extensão não permitida: {ext}")
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"): raise HTTPException(400, "Extensão inválida")
     nome = f"{secrets.token_hex(8)}{ext}"
     destino = UPLOAD_DIR / sub / nome
     with destino.open("wb") as f:
-        while chunk := await arq.read(1024 * 1024):
-            f.write(chunk)
+        while chunk := await arq.read(1024 * 1024): f.write(chunk)
     return f"/uploads/{sub}/{nome}"
 
-
 @app.put("/admin/filme/{item_id}")
-async def editar_filme(
-    item_id: int,
-    titulo: Optional[str] = Form(None),
-    ano: Optional[int] = Form(None),
-    categoria: Optional[str] = Form(None),
-    sinopse: Optional[str] = Form(None),
-    url: Optional[str] = Form(None),
-    capa: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
-    logo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-):
+async def editar_filme(item_id: int, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(FilmeDB).get(item_id)
-    if not it:
-        raise HTTPException(404, "Filme não encontrado")
+    if not it: raise HTTPException(404, "Filme não encontrado")
     if titulo is not None: it.titulo = titulo
     if ano is not None: it.ano = ano
     if categoria is not None: it.categoria = categoria
@@ -588,27 +549,14 @@ async def editar_filme(
     if banner: it.banner = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
     it.editado = True
-    db.commit()
-    db.refresh(it)
+    db.commit(); db.refresh(it)
     await manager.broadcast("item_editado", {"tipo": "filme", "id": it.id, "titulo": it.titulo})
     return {"ok": True, "id": it.id, "titulo": it.titulo}
 
-
 @app.put("/admin/serie/{item_id}")
-async def editar_serie(
-    item_id: int,
-    titulo: Optional[str] = Form(None),
-    ano: Optional[int] = Form(None),
-    categoria: Optional[str] = Form(None),
-    sinopse: Optional[str] = Form(None),
-    capa: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
-    logo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-):
+async def editar_serie(item_id: int, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(SerieDB).get(item_id)
-    if not it:
-        raise HTTPException(404, "Série não encontrada")
+    if not it: raise HTTPException(404, "Série não encontrada")
     if titulo is not None: it.titulo = titulo
     if ano is not None: it.ano = ano
     if categoria is not None: it.categoria = categoria
@@ -617,38 +565,23 @@ async def editar_serie(
     if banner: it.banner = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
     it.editado = True
-    db.commit()
-    db.refresh(it)
+    db.commit(); db.refresh(it)
     await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.titulo})
     return {"ok": True, "id": it.id, "titulo": it.titulo}
 
-
 @app.put("/admin/canal/{item_id}")
-async def editar_canal(
-    item_id: int,
-    titulo: Optional[str] = Form(None),
-    categoria: Optional[str] = Form(None),
-    url: Optional[str] = Form(None),
-    capa: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-):
+async def editar_canal(item_id: int, titulo: Optional[str] = Form(None), categoria: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(CanalDB).get(item_id)
-    if not it:
-        raise HTTPException(404, "Canal não encontrado")
+    if not it: raise HTTPException(404, "Canal não encontrado")
     if titulo is not None: it.titulo = titulo
     if categoria is not None: it.categoria = categoria
     if url is not None: it.url = url
     if capa: it.capa = await _salvar_upload(capa, "capas")
     it.editado = True
-    db.commit()
-    db.refresh(it)
+    db.commit(); db.refresh(it)
     await manager.broadcast("item_editado", {"tipo": "canal", "id": it.id, "titulo": it.titulo})
     return {"ok": True, "id": it.id, "titulo": it.titulo}
 
-
-# ==========================================================
-# ADMIN — SLIDER
-# ==========================================================
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
     slides = db.query(SlideDB).order_by(SlideDB.ordem).all()
@@ -661,172 +594,93 @@ def admin_slider_listar(db: Session = Depends(get_db)):
         elif s.ref_tipo == "serie":
             r = db.query(SerieDB).get(s.ref_id)
             ref = {"titulo": r.titulo, "capa": r.capa, "ano": r.ano} if r else None
-        out.append({
-            "id": s.id, "ordem": s.ordem,
-            "ref_tipo": s.ref_tipo, "ref_id": s.ref_id,
-            "titulo": s.titulo or (ref["titulo"] if ref else "?"),
-            "banner": s.banner or (ref.get("capa") if ref else None),
-            "logo": s.logo, "sinopse": s.sinopse,
-            "ref": ref, "ativo": s.ativo,
-        })
+        out.append({"id": s.id, "ordem": s.ordem, "ref_tipo": s.ref_tipo, "ref_id": s.ref_id, "titulo": s.titulo or (ref["titulo"] if ref else "?"), "banner": s.banner or (ref.get("capa") if ref else None), "logo": s.logo, "sinopse": s.sinopse, "ref": ref, "ativo": s.ativo})
     return {"total": len(out), "items": out}
 
-
 @app.post("/admin/slider")
-async def admin_slider_adicionar(
-    ref_tipo: str = Form(...),
-    ref_id: int = Form(...),
-    titulo: Optional[str] = Form(None),
-    banner: Optional[str] = Form(None),
-    logo: Optional[str] = Form(None),
-    sinopse: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-):
+async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: int = Form(...), db: Session = Depends(get_db)):
     global _HOME_CACHE_TS
-    if ref_tipo not in ("filme", "serie"):
-        raise HTTPException(400, "ref_tipo deve ser 'filme' ou 'serie'")
-    if ref_tipo == "filme":
-        ref = db.query(FilmeDB).get(ref_id)
-    else:
-        ref = db.query(SerieDB).get(ref_id)
-    if not ref:
-        raise HTTPException(404, "Item não encontrado")
+    if ref_tipo not in ("filme", "serie"): raise HTTPException(400, "inválido")
     ultimo = db.query(SlideDB).order_by(SlideDB.ordem.desc()).first()
     proxima = (ultimo.ordem + 1) if ultimo else 0
-    novo = SlideDB(
-        ordem=proxima, ref_tipo=ref_tipo, ref_id=ref_id,
-        titulo=titulo, banner=banner, logo=logo, sinopse=sinopse, ativo=True,
-    )
-    db.add(novo)
-    db.commit()
-    db.refresh(novo)
+    novo = SlideDB(ordem=proxima, ref_tipo=ref_tipo, ref_id=ref_id, ativo=True)
+    db.add(novo); db.commit(); db.refresh(novo)
     _HOME_CACHE_TS = 0
     await manager.broadcast("slider_atualizado", {"acao": "adicionar", "id": novo.id})
     return {"ok": True, "id": novo.id}
 
-
 @app.put("/admin/slider/{slide_id}")
-async def admin_slider_editar(
-    slide_id: int,
-    titulo: Optional[str] = Form(None),
-    banner: Optional[str] = Form(None),
-    logo: Optional[str] = Form(None),
-    sinopse: Optional[str] = Form(None),
-    ativo: Optional[bool] = Form(None),
-    db: Session = Depends(get_db),
-):
+async def admin_slider_editar(slide_id: int, titulo: Optional[str] = Form(None), banner: Optional[str] = Form(None), logo: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), db: Session = Depends(get_db)):
     global _HOME_CACHE_TS
     s = db.query(SlideDB).get(slide_id)
-    if not s:
-        raise HTTPException(404, "Slide não encontrado")
+    if not s: raise HTTPException(404, "não encontrado")
     if titulo is not None: s.titulo = titulo or None
     if banner is not None: s.banner = banner or None
     if logo is not None: s.logo = logo or None
     if sinopse is not None: s.sinopse = sinopse or None
-    if ativo is not None: s.ativo = ativo
-    db.commit()
-    _HOME_CACHE_TS = 0
+    db.commit(); _HOME_CACHE_TS = 0
     await manager.broadcast("slider_atualizado", {"acao": "editar", "id": slide_id})
     return {"ok": True}
-
 
 @app.delete("/admin/slider/{slide_id}")
 async def admin_slider_remover(slide_id: int, db: Session = Depends(get_db)):
     global _HOME_CACHE_TS
     s = db.query(SlideDB).get(slide_id)
-    if not s:
-        raise HTTPException(404, "Slide não encontrado")
-    db.delete(s)
-    db.commit()
-    _HOME_CACHE_TS = 0
+    if not s: raise HTTPException(404, "não encontrado")
+    db.delete(s); db.commit(); _HOME_CACHE_TS = 0
     await manager.broadcast("slider_atualizado", {"acao": "remover", "id": slide_id})
     return {"ok": True}
-
 
 @app.post("/admin/slider/reordenar")
 async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(get_db)):
     global _HOME_CACHE_TS
-    try:
-        ids = [int(x.strip()) for x in ordem.split(",") if x.strip()]
-    except Exception:
-        raise HTTPException(400, "Formato inválido")
+    try: ids = [int(x.strip()) for x in ordem.split(",") if x.strip()]
+    except: raise HTTPException(400, "Formato inválido")
     for i, sid in enumerate(ids):
         s = db.query(SlideDB).get(sid)
-        if s:
-            s.ordem = i
-    db.commit()
-    _HOME_CACHE_TS = 0
+        if s: s.ordem = i
+    db.commit(); _HOME_CACHE_TS = 0
     await manager.broadcast("slider_atualizado", {"acao": "reordenar"})
     return {"ok": True}
 
-
 # ==========================================================
-# RESOLUÇÃO DE EPISÓDIO SOB DEMANDA (Opção B)
+# RESOLUÇÃO E PROXY
 # ==========================================================
 _EPISODIO_RE = re.compile(r'^(.+?)-t(\d+)-e(\d+)$')
 
-
 async def _resolver_episodio_sob_demanda(slug: str):
     m = _EPISODIO_RE.match(slug)
-    if not m:
-        return None
+    if not m: return None
     base = m.group(1)
-    print(f"[Proxy] Episódio '{slug}' não está no mapa. Buscando série base '{base}'...")
     serie_encontrada = None
     for s in _SERIES:
         if _slugify(s.get("titulo") or "") == base:
-            serie_encontrada = s
-            break
-    if not serie_encontrada:
-        print(f"[Proxy] Nenhuma série corresponde a '{base}'")
-        return None
+            serie_encontrada = s; break
+    if not serie_encontrada: return None
     serie_id = str(serie_encontrada.get("id") or "")
-    if not serie_id:
-        return None
-    try:
-        print(f"[Proxy] Carregando episódios da série {serie_id} ({serie_encontrada.get('titulo')})...")
-        await fetch_series_info(serie_id)
-    except Exception as e:
-        print(f"[Proxy] Falha ao buscar série {serie_id}: {e}")
-        return None
-    item = get_by_slug(slug)
-    if item:
-        print(f"[Proxy] ✓ Episódio resolvido: {slug}")
-    else:
-        print(f"[Proxy] ✗ Episódio ainda não encontrado após carregar série: {slug}")
-    return item
+    if not serie_id: return None
+    try: await fetch_series_info(serie_id)
+    except: return None
+    return get_by_slug(slug)
 
-
-# ==========================================================
-# PROXY
-# ==========================================================
 @app.get("/stream/id/{item_id}")
 async def proxy_por_id(item_id: str, request: Request):
     cid = item_id
     for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov"):
-        if cid.lower().endswith(ext):
-            cid = cid[:-len(ext)]
-            break
+        if cid.lower().endswith(ext): cid = cid[:-len(ext)]; break
     item = get_by_id(cid)
-    if not item:
-        raise HTTPException(404, "ID não encontrado.")
+    if not item: raise HTTPException(404, "ID não encontrado.")
     return await stream_proxy(item["url"], request)
-
 
 @app.get("/stream/{slug_path:path}")
 async def proxy_por_slug(slug_path: str, request: Request):
     slug = slug_path
     for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
-        if slug.lower().endswith(ext):
-            slug = slug[:-len(ext)]
-            break
+        if slug.lower().endswith(ext): slug = slug[:-len(ext)]; break
     item = get_by_slug(slug)
-    if not item:
-        item = await _resolver_episodio_sob_demanda(slug)
-    if not item:
-        raise HTTPException(404, "Slug não encontrado.")
+    if not item: item = await _resolver_episodio_sob_demanda(slug)
+    if not item: raise HTTPException(404, "Slug não encontrado.")
     return await stream_proxy(item["url"], request)
-
 
 @app.get("/proxy/stats")
 def proxy_monitor():

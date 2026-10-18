@@ -180,13 +180,16 @@ const Api = {
     status() { return this.get('/status'); },
     proxyStats() { return this.get('/proxy/stats'); },
     novidades() { return this.get('/novidades'); },
-    refresh() { return this.post('/refresh'); },
     adminFilmes: (q='', page=1, size=30) => Api.get(`/admin/filmes?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
-    notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); }
+    notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
+    
+    // Novas rotas de Sincronização
+    forceSync() { return this.post('/admin/force-sync'); },
+    forceSyncStatus() { return this.get('/admin/force-sync/status'); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -252,6 +255,31 @@ const Views = {
                 ${this.statCard('Canais', fmt(stats.total_canais), 'fa-satellite-dish', 'text-green-400')}
                 ${this.statCard('Slugs proxy', fmt(proxy.slugs_carregados), 'fa-link', 'text-yellow-400')}
             </div>
+
+            <!-- CARD DE SINCRONIZAÇÃO FORÇADA -->
+            <div class="stat-card rounded-xl p-5 mb-6 border-red-600/30 bg-red-600/5">
+                <div class="flex flex-col md:flex-row items-center gap-4">
+                    <div class="w-14 h-14 rounded-full bg-red-600/20 flex items-center justify-center flex-shrink-0">
+                        <i class="fa-solid fa-arrows-rotate text-red-500 text-xl" id="sync-icon"></i>
+                    </div>
+                    <div class="flex-1 text-center md:text-left">
+                        <h3 class="text-sm font-bold text-white mb-1">Forçar Atualização do Catálogo</h2>
+                        <p class="text-xs text-gray-400">Baixa todos os filmes, séries e canais do servidor IPTV novamente e recria o banco de dados do zero. Use isso se notar que faltam filmes no aplicativo.</p>
+                    </div>
+                    <button id="btn-force-sync" onclick="Actions.forceSync()" class="h-10 px-6 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center gap-2 w-full md:w-auto justify-center">
+                        <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora
+                    </button>
+                </div>
+                <div id="sync-progress" class="hidden mt-4">
+                    <div class="flex items-center gap-3 text-xs text-red-400 font-bold mb-2">
+                        <i class="fa-solid fa-circle-notch fa-spin"></i> Baixando catálogo... Isso pode levar alguns minutos.
+                    </div>
+                    <div class="w-full bg-[#1a1a1a] rounded-full h-2">
+                        <div class="bg-red-600 h-2 rounded-full animate-pulse" style="width: 100%"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="grid md:grid-cols-3 gap-4 mb-6">
                 <div class="stat-card rounded-xl p-4">
                     <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Cache M3U</div>
@@ -276,6 +304,13 @@ const Views = {
                 </div>
             </div>
         `;
+        
+        // Se já estiver sincronizando ao abrir a tela, mostra o loading
+        if (s.sync_ativo) {
+            document.getElementById('sync-progress').classList.remove('hidden');
+            document.getElementById('btn-force-sync').disabled = true;
+            document.getElementById('btn-force-sync').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizando...';
+        }
     },
 
     // ============================================================
@@ -539,7 +574,6 @@ const Views = {
             type: document.getElementById('notif-type').value,
             target: document.getElementById('notif-target').value,
             uid: document.getElementById('notif-uid').value || null,
-            // ⚡ ENVIA PARA A API
             itemId: itemId || null,
             itemType: itemType || null
         };
@@ -1120,20 +1154,41 @@ const Views = {
 };
 
 const Actions = {
-    async refresh() {
-        Toast.show('⏳ Atualizando catálogo...', 'info');
+    async forceSync() {
+        if (!confirm('Isso vai baixar TODO o catálogo novamente e recriar o banco de dados. Pode demorar alguns minutos. Deseja continuar?')) return;
+        
+        const btn = document.getElementById('btn-force-sync');
+        const prog = document.getElementById('sync-progress');
+        
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Iniciando...';
+        prog.classList.remove('hidden');
+        
         try {
-            const r = await Api.refresh();
-            Toast.show(`✅ ${r.stats.total_filmes} filmes, ${r.stats.total_series} séries`, 'success', 5000);
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
-    },
-    async novidades() {
-        Toast.show('⏳ Verificando novidades...', 'info');
-        try {
-            const r = await Api.verificarNovidades();
-            Toast.show(`🎉 ${r.totais.lancamentos} lançamentos`, 'success', 5000);
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
-    },
+            const r = await Api.forceSync();
+            if (!r.ok) throw new Error(r.msg);
+            Toast.show('🚀 Sincronização iniciada! Aguarde...', 'info', 5000);
+            
+            // Fica checando o status a cada 3 segundos
+            const timer = setInterval(async () => {
+                const st = await Api.forceSyncStatus();
+                if (!st.ativo) {
+                    clearInterval(timer);
+                    Toast.show(`✅ Catálogo atualizado! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
+                    prog.classList.add('hidden');
+                    Router.render();
+                }
+            }, 3000);
+            
+        } catch (e) {
+            Toast.show('Erro: ' + e.message, 'error', 5000);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar Tudo Agora';
+            prog.classList.add('hidden');
+        }
+    }
 };
 
 function manualRefresh() { Router.render(); }
