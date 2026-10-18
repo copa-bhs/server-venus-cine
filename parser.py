@@ -1,8 +1,11 @@
 import re
 import asyncio
 import httpx
+import time
+import json
+from pathlib import Path
 
-from config import IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT
+from config import IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT, CACHE_DIR
 
 BASE_API = f"{IPTV_HOST}/player_api.php"
 USERNAME = IPTV_USERNAME
@@ -79,32 +82,48 @@ def _extract_year(text):
     m = YEAR_RE.search(str(text))
     return int(m.group(1)) if m else None
 
-async def _fetch(client: httpx.AsyncClient, action: str) -> list:
+async def _fetch_robusto(client: httpx.AsyncClient, action: str) -> list:
     url = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action={action}"
+    t0 = time.time()
     try:
+        print(f"[Debug] Iniciando download de {action}...")
         r = await client.get(url, headers={"User-Agent": USER_AGENT}, timeout=300)
+        
+        # ⚡ VERIFICA O TAMANHO DO ARQUIVO BAIXADO
+        tamanho_mb = len(r.content) / (1024 * 1024)
+        tempo = time.time() - t0
+        print(f"[Debug] {action} baixado: {tamanho_mb:.2f} MB em {tempo:.1f}s")
+
         if r.status_code != 200:
             print(f"[!] {action}: HTTP {r.status_code}")
             return []
         
-        # Verifica se o Xtream retornou erro na estrutura (ex: {user_info: {auth: 0}})
         data = r.json()
+        
+        # Se o Xtream retornar um dicionário de erro (ex: senha errada)
         if isinstance(data, dict) and "user_info" in data:
             if data["user_info"].get("auth") == 0:
                 print(f"[!] ERRO DE AUTENTICAÇÃO NO XTREAM! Verifique usuário e senha no .env")
                 return []
                 
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            print(f"[!] {action}: Provedor retornou um formato inesperado (não é uma lista).")
+            return []
+            
+        return data
+
+    except httpx.ReadTimeout:
+        print(f"[!] {action}: O provedor demorou mais de 5 minutos para responder. (Timeout)")
+        return []
     except Exception as e:
         print(f"[!] {action}: Erro no download - {e}")
         return []
 
 async def fetch_filmes() -> list:
-    print("[•] Baixando filmes (API Xtream)...")
     async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
         cats, streams = await asyncio.gather(
-            _fetch(client, "get_vod_categories"),
-            _fetch(client, "get_vod_streams"),
+            _fetch_robusto(client, "get_vod_categories"),
+            _fetch_robusto(client, "get_vod_streams"),
         )
     cat_map = {str(c.get("category_id")): (c.get("category_name") or "Geral") for c in cats if isinstance(c, dict)}
     filmes = []
@@ -125,15 +144,14 @@ async def fetch_filmes() -> list:
             "url": f"{IPTV_HOST}/movie/{USERNAME}/{PASSWORD}/{sid}.{ext}",
         })
     filmes.sort(key=lambda x: (x["titulo"] or "").lower())
-    print(f"[✓] {len(filmes)} filmes baixados")
+    print(f"[✓] {len(filmes)} filmes processados")
     return filmes
 
 async def fetch_series() -> list:
-    print("[•] Baixando séries (API Xtream)...")
     async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
         cats, series = await asyncio.gather(
-            _fetch(client, "get_series_categories"),
-            _fetch(client, "get_series"),
+            _fetch_robusto(client, "get_series_categories"),
+            _fetch_robusto(client, "get_series"),
         )
     cat_map = {str(c.get("category_id")): (c.get("category_name") or "Geral") for c in cats if isinstance(c, dict)}
     result = []
@@ -153,15 +171,14 @@ async def fetch_series() -> list:
             "categoria": _clean_category(cat_map.get(cat_id, "Geral")),
         })
     result.sort(key=lambda x: (x["titulo"] or "").lower())
-    print(f"[✓] {len(result)} séries baixadas")
+    print(f"[✓] {len(result)} séries processadas")
     return result
 
 async def fetch_canais() -> list:
-    print("[•] Baixando canais (API Xtream)...")
     async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
         cats, streams = await asyncio.gather(
-            _fetch(client, "get_live_categories"),
-            _fetch(client, "get_live_streams"),
+            _fetch_robusto(client, "get_live_categories"),
+            _fetch_robusto(client, "get_live_streams"),
         )
     cat_map = {str(c.get("category_id")): (c.get("category_name") or "Geral") for c in cats if isinstance(c, dict)}
     canais = []
@@ -180,5 +197,5 @@ async def fetch_canais() -> list:
             "url": f"{IPTV_HOST}/live/{USERNAME}/{PASSWORD}/{sid}.ts",
         })
     canais.sort(key=lambda x: (x["titulo"] or "").lower())
-    print(f"[✓] {len(canais)} canais baixados")
+    print(f"[✓] {len(canais)} canais processados")
     return canais
