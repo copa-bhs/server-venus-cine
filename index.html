@@ -22,6 +22,9 @@
     .input-dark { width: 100%; height: 40px; padding: 0 12px; background: #0a0a0a; border: 1px solid #262626; border-radius: 8px; color: #fff; font-size: 14px; outline: none; }
     .input-dark:focus { border-color: #E50914; }
     textarea.input-dark { height: auto; padding: 10px 12px; resize: vertical; }
+    .template-btn { padding: 10px; border-radius: 8px; background: #1a1a1a; border: 1px solid #333; font-size: 12px; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; align-items: center; gap: 4px; color: #ccc; }
+    .template-btn:hover { border-color: #E50914; color: #fff; background: #222; }
+    .template-btn.active { background: rgba(229,9,20,0.1); border-color: #E50914; color: #E50914; }
 </style>
 </head>
 <body>
@@ -96,18 +99,10 @@ let WS_RECONNECT_TIMER = null;
 function conectarWS() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/ws`;
-    try {
-        WS = new WebSocket(url);
-    } catch (e) { agendarReconectarWS(); return; }
+    try { WS = new WebSocket(url); } catch (e) { agendarReconectarWS(); return; }
 
-    WS.onopen = () => {
-        atualizarStatusWS(true);
-        Toast.show('🟢 Tempo real conectado', 'success', 2000);
-    };
-    WS.onclose = () => {
-        atualizarStatusWS(false);
-        agendarReconectarWS();
-    };
+    WS.onopen = () => { atualizarStatusWS(true); };
+    WS.onclose = () => { atualizarStatusWS(false); agendarReconectarWS(); };
     WS.onerror = () => atualizarStatusWS(false);
     WS.onmessage = (ev) => {
         if (ev.data === 'pong') return;
@@ -116,10 +111,7 @@ function conectarWS() {
             tratarEvento(msg.evento, msg.dados);
         } catch {}
     };
-
-    setInterval(() => {
-        if (WS && WS.readyState === WebSocket.OPEN) WS.send('ping');
-    }, 25000);
+    setInterval(() => { if (WS && WS.readyState === WebSocket.OPEN) WS.send('ping'); }, 25000);
 }
 
 function agendarReconectarWS() {
@@ -154,8 +146,6 @@ function tratarEvento(evento, dados) {
     } else if (evento === 'item_editado') {
         Toast.show(`✏️ ${dados.tipo} "${dados.titulo}" atualizado`, 'success', 3000);
         if (['filmes','series','canais','slider'].includes(Router.current)) Router.render();
-    } else if (evento === 'novidades') {
-        Toast.show(`🎉 ${dados.filmes_novos} filmes, ${dados.series_novas} séries novas`, 'warn', 6000);
     }
 }
 
@@ -191,13 +181,10 @@ const Api = {
     proxyStats() { return this.get('/proxy/stats'); },
     novidades() { return this.get('/novidades'); },
     refresh() { return this.post('/refresh'); },
-    verificarNovidades() { return this.post('/novidades/verificar'); },
     adminFilmes: (q='', page=1, size=30) => Api.get(`/admin/filmes?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
-    
-    // NOVOS ENDPOINTS DE NOTIFICAÇÃO
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); }
 };
@@ -292,67 +279,227 @@ const Views = {
     },
 
     // ============================================================
-    // NOTIFICAÇÕES
+    // NOTIFICAÇÕES INTELIGENTES
     // ============================================================
     async notificacoes(c) {
         c.innerHTML = `
             <div class="grid md:grid-cols-2 gap-6">
-                <!-- Formulário -->
-                <div class="stat-card rounded-xl p-5">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-4"><i class="fa-solid fa-paper-plane mr-1"></i> Disparar Notificação</div>
-                    <form onsubmit="Views._enviarNotif(event)" class="space-y-4">
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Título da Notificação *</label>
-                            <input id="notif-title" class="input-dark" required placeholder="Ex: Novo Filme Adicionado!">
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
-                            <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Confira agora o mais novo lançamento..."></textarea>
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
-                            <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="text-xs text-gray-400 block mb-1">Tipo</label>
-                                <select id="notif-type" class="input-dark">
-                                    <option value="geral">Geral (Aviso)</option>
-                                    <option value="lancamento">Lançamento</option>
-                                </select>
+                
+                <!-- Lado Esquerdo: Criação -->
+                <div class="space-y-4">
+                    
+                    <!-- Modelos Rápidos -->
+                    <div class="stat-card rounded-xl p-4">
+                        <div class="text-xs font-semibold text-gray-400 uppercase mb-3"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Modelos Rápidos</div>
+                        <div class="grid grid-cols-3 gap-2">
+                            <div class="template-btn active" onclick="Views._notifTemplate('geral', this)">
+                                <i class="fa-solid fa-bullhorn text-lg"></i> Aviso Geral
                             </div>
-                            <div>
-                                <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
-                                <select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')">
-                                    <option value="all">Todos os usuários</option>
-                                    <option value="specific">Usuário específico</option>
-                                </select>
+                            <div class="template-btn" onclick="Views._notifTemplate('plano', this)">
+                                <i class="fa-solid fa-crown text-lg"></i> Novo Plano
+                            </div>
+                            <div class="template-btn" onclick="Views._notifTemplate('lancamento', this)">
+                                <i class="fa-solid fa-film text-lg"></i> Lançamento
                             </div>
                         </div>
-                        <div id="notif-uid-area" class="hidden">
-                            <label class="text-xs text-gray-400 block mb-1">UID do Usuário</label>
-                            <input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase">
-                        </div>
-                        
-                        <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2">
-                            <i class="fa-solid fa-rocket"></i> Disparar Notificação
-                        </button>
-                    </form>
+                    </div>
+
+                    <!-- Formulário -->
+                    <div class="stat-card rounded-xl p-5">
+                        <form onsubmit="Views._enviarNotif(event)" class="space-y-4">
+                            
+                            <!-- Área exclusiva para buscar filme se for lançamento -->
+                            <div id="notif-busca-area" class="hidden bg-[#0a0a0a] border border-[#262626] rounded-lg p-3">
+                                <label class="text-[10px] text-gray-500 block mb-1">Puxar dados do catálogo (Opcional)</label>
+                                <div class="flex gap-2">
+                                    <select id="notif-busca-tipo" class="input-dark w-24 text-xs">
+                                        <option value="filme">Filme</option>
+                                        <option value="serie">Série</option>
+                                    </select>
+                                    <input id="notif-busca-q" class="input-dark text-xs flex-1" placeholder="Nome do título...">
+                                    <button type="button" onclick="Views._notifBuscar()" class="h-10 px-3 rounded-lg bg-red-600 text-xs font-bold"><i class="fa-solid fa-search"></i></button>
+                                </div>
+                                <div id="notif-busca-resultados" class="mt-2 space-y-1 max-h-32 overflow-y-auto"></div>
+                            </div>
+
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Título *</label>
+                                <input id="notif-title" class="input-dark" required placeholder="Ex: Novo Filme Adicionado!">
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
+                                <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Confira agora o mais novo lançamento..."></textarea>
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
+                                <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
+                                    <select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')">
+                                        <option value="all">Todos os usuários</option>
+                                        <option value="specific">Usuário específico</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-1">Tipo Base</label>
+                                    <select id="notif-type" class="input-dark">
+                                        <option value="geral">Geral</option>
+                                        <option value="lancamento">Lançamento</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div id="notif-uid-area" class="hidden">
+                                <label class="text-xs text-gray-400 block mb-1">UID do Usuário</label>
+                                <input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase">
+                            </div>
+                            
+                            <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2 mt-4">
+                                <i class="fa-solid fa-rocket"></i> Disparar Notificação
+                            </button>
+                        </form>
+                    </div>
                 </div>
 
-                <!-- Histórico -->
-                <div class="stat-card rounded-xl p-5 flex flex-col h-[600px]">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center">
-                        <span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico de Envios</span>
-                        <button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button>
+                <!-- Lado Direito: Preview e Histórico -->
+                <div class="space-y-4">
+                    
+                    <!-- Preview no Celular -->
+                    <div class="stat-card rounded-xl p-5">
+                        <div class="text-xs font-semibold text-gray-400 uppercase mb-4"><i class="fa-solid fa-mobile-screen mr-1"></i> Preview no Celular</div>
+                        
+                        <!-- Mockup da notificação -->
+                        <div class="bg-[#1c1c1e] border border-[#333] rounded-2xl p-3 shadow-lg flex gap-3 relative overflow-hidden">
+                            <div id="preview-img-box" class="w-10 h-10 rounded-lg bg-[#333] flex items-center justify-center flex-shrink-0 overflow-hidden hidden">
+                                <img id="preview-img" src="" class="w-full h-full object-cover">
+                            </div>
+                            <div id="preview-icon-box" class="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center flex-shrink-0 text-white font-black italic text-xl">V</div>
+                            
+                            <div class="flex-1 min-w-0">
+                                <div class="flex justify-between items-center mb-1">
+                                    <span class="text-[10px] text-gray-400 uppercase font-bold">Vênus Cine</span>
+                                    <span class="text-[10px] text-gray-500">agora</span>
+                                </div>
+                                <div class="text-sm font-bold text-white truncate" id="preview-title">Título da Notificação</div>
+                                <div class="text-xs text-gray-300 line-clamp-2 mt-0.5" id="preview-body">A mensagem que você digitar vai aparecer aqui...</div>
+                            </div>
+                        </div>
                     </div>
-                    <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2">
-                        <div class="text-center text-gray-500 text-xs py-4">Carregando...</div>
+
+                    <!-- Histórico -->
+                    <div class="stat-card rounded-xl p-5 flex flex-col h-[400px]">
+                        <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center">
+                            <span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico</span>
+                            <button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button>
+                        </div>
+                        <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2">
+                            <div class="text-center text-gray-500 text-xs py-4">Carregando...</div>
+                        </div>
                     </div>
                 </div>
             </div>
         `;
+        
         this._carregarHistoricoNotif();
+        
+        // Listener para atualizar o preview em tempo real
+        document.getElementById('notif-title').oninput = (e) => document.getElementById('preview-title').textContent = e.target.value || 'Título da Notificação';
+        document.getElementById('notif-body').oninput = (e) => document.getElementById('preview-body').textContent = e.target.value || 'A mensagem que você digitar vai aparecer aqui...';
+        document.getElementById('notif-image').oninput = (e) => {
+            const box = document.getElementById('preview-img-box');
+            const icon = document.getElementById('preview-icon-box');
+            const img = document.getElementById('preview-img');
+            if (e.target.value) {
+                img.src = e.target.value;
+                box.classList.remove('hidden');
+                icon.classList.add('hidden');
+            } else {
+                box.classList.add('hidden');
+                icon.classList.remove('hidden');
+            }
+        };
+    },
+
+    _notifTemplate(tipo, el) {
+        document.querySelectorAll('.template-btn').forEach(b => b.classList.remove('active'));
+        el.classList.add('active');
+        
+        const buscaArea = document.getElementById('notif-busca-area');
+        const title = document.getElementById('notif-title');
+        const body = document.getElementById('notif-body');
+        const img = document.getElementById('notif-image');
+        const type = document.getElementById('notif-type');
+
+        if (tipo === 'lancamento') {
+            buscaArea.classList.remove('hidden');
+            title.value = '🎬 Novo Lançamento!';
+            body.value = 'Acabou de chegar no catálogo. Confira agora!';
+            type.value = 'lancamento';
+        } else if (tipo === 'plano') {
+            buscaArea.classList.add('hidden');
+            title.value = '👑 Novos Planos Disponíveis';
+            body.value = 'Assine o plano Premium e assista em 4K sem anúncios!';
+            type.value = 'geral';
+        } else {
+            buscaArea.classList.add('hidden');
+            title.value = '';
+            body.value = '';
+            type.value = 'geral';
+        }
+        
+        // Limpa imagem se mudou de template
+        if (tipo !== 'lancamento') {
+            img.value = '';
+            img.dispatchEvent(new Event('input'));
+        }
+        title.dispatchEvent(new Event('input'));
+        body.dispatchEvent(new Event('input'));
+    },
+
+    async _notifBuscar() {
+        const tipo = document.getElementById('notif-busca-tipo').value;
+        const q = document.getElementById('notif-busca-q').value.trim();
+        const box = document.getElementById('notif-busca-resultados');
+        box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs"><i class="fa-solid fa-circle-notch fa-spin"></i></div>';
+
+        const rota = tipo === 'filme' ? 'filmes' : 'series';
+        try {
+            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=5`);
+            const d = await r.json();
+            if (!d.items?.length) {
+                box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs">Nada encontrado</div>';
+                return;
+            }
+            box.innerHTML = d.items.map(it => `
+                <div class="flex items-center gap-2 bg-[#1a1a1a] border border-[#333] rounded p-1.5 hover:border-red-600 cursor-pointer"
+                     onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}')">
+                    <div class="w-6 h-8 rounded bg-gray-900 overflow-hidden flex-shrink-0">
+                        ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}
+                    </div>
+                    <div class="text-xs font-bold truncate flex-1">${esc(it.titulo)}</div>
+                </div>
+            `).join('');
+        } catch (e) {
+            box.innerHTML = `<div class="text-red-400 text-xs text-center py-2">Erro na busca</div>`;
+        }
+    },
+
+    _notifPreencher(titulo, capa) {
+        document.getElementById('notif-title').value = `🎬 Chegou: ${titulo}`;
+        document.getElementById('notif-body').value = `O sucesso ${titulo} já está disponível no catálogo. Clique para assistir!`;
+        document.getElementById('notif-image').value = capa;
+        
+        // Atualiza preview
+        document.getElementById('notif-title').dispatchEvent(new Event('input'));
+        document.getElementById('notif-body').dispatchEvent(new Event('input'));
+        document.getElementById('notif-image').dispatchEvent(new Event('input'));
+        
+        // Limpa busca
+        document.getElementById('notif-busca-resultados').innerHTML = '';
+        document.getElementById('notif-busca-q').value = '';
     },
 
     async _enviarNotif(ev) {
@@ -374,9 +521,15 @@ const Views = {
             const r = await Api.notifEnviar(payload);
             if (!r.ok) throw new Error(r.msg || 'Erro ao enviar');
             Toast.show(`✅ ${r.msg}`, 'success', 5000);
+            
+            // Limpa form
             document.getElementById('notif-title').value = '';
             document.getElementById('notif-body').value = '';
             document.getElementById('notif-image').value = '';
+            document.getElementById('notif-title').dispatchEvent(new Event('input'));
+            document.getElementById('notif-body').dispatchEvent(new Event('input'));
+            document.getElementById('notif-image').dispatchEvent(new Event('input'));
+            
             this._carregarHistoricoNotif();
         } catch (e) {
             Toast.show(`❌ Erro: ${e.message}`, 'error', 5000);
@@ -388,6 +541,7 @@ const Views = {
 
     async _carregarHistoricoNotif() {
         const box = document.getElementById('notif-historico');
+        if(!box) return;
         try {
             const r = await Api.notifHistorico();
             if (!r.items || r.items.length === 0) {
@@ -395,32 +549,32 @@ const Views = {
                 return;
             }
             box.innerHTML = r.items.map(n => {
-                let dataFormatada = 'Data desconhecida';
+                let dataFormatada = '';
                 if (n.createdAt) {
                     try {
                         const dt = new Date(n.createdAt);
-                        dataFormatada = dt.toLocaleString('pt-BR');
+                        dataFormatada = dt.toLocaleString('pt-BR', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
                     } catch {}
                 }
                 
                 const tipoBadge = n.type === 'lancamento' 
-                    ? `<span class="text-[9px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold">LANÇAMENTO</span>`
-                    : `<span class="text-[9px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">GERAL</span>`;
+                    ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold">LANÇAMENTO</span>`
+                    : `<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">GERAL</span>`;
 
                 return `
-                    <div class="bg-[#0a0a0a] border border-[#262626] rounded-lg p-3 relative">
+                    <div class="bg-[#0a0a0a] border border-[#262626] rounded-lg p-2.5">
                         <div class="flex items-center gap-2 mb-1">
                             ${tipoBadge}
                             <span class="text-[10px] text-gray-500 ml-auto">${dataFormatada}</span>
                         </div>
-                        <div class="text-sm font-bold text-gray-200">${esc(n.title)}</div>
-                        <div class="text-xs text-gray-400 mt-1 line-clamp-2">${esc(n.body)}</div>
-                        ${n.imageUrl ? `<div class="text-[10px] text-blue-400 truncate mt-1"><i class="fa-solid fa-image mr-1"></i>${esc(n.imageUrl)}</div>` : ''}
+                        <div class="text-xs font-bold text-gray-200 truncate">${esc(n.title)}</div>
+                        <div class="text-[10px] text-gray-400 mt-0.5 line-clamp-2">${esc(n.body)}</div>
+                        ${n.imageUrl ? `<div class="mt-1 h-10 w-full rounded overflow-hidden"><img src="${esc(n.imageUrl)}" class="h-full object-cover"></div>` : ''}
                     </div>
                 `;
             }).join('');
         } catch (e) {
-            box.innerHTML = `<div class="text-red-400 text-xs text-center py-4">Erro ao carregar histórico: ${esc(e.message)}</div>`;
+            box.innerHTML = `<div class="text-red-400 text-xs text-center py-4">Erro ao carregar histórico.</div>`;
         }
     },
 
