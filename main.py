@@ -42,7 +42,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.7.0")
+app = FastAPI(title="IPTV Organizer Pro", version="9.7.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,7 +71,7 @@ _HOME_CACHE: dict = {}
 _HOME_CACHE_TS: float = 0
 _HOME_CACHE_TTL = 300
 _SYNC_ATIVO = False
-_SYNC_LOGS = [] # Armazena o log da sincronização em tempo real
+_SYNC_LOGS = [] 
 
 def _stats() -> dict:
     return {"total_filmes": len(_FILMES), "total_series": len(_SERIES), "total_canais": len(_CANAIS)}
@@ -123,7 +123,6 @@ async def fetch_and_rebuild(force: bool = False):
     print("[•] Atualizando catálogo via API Xtream...")
     t0 = time.time()
     
-    # Redireciona o print() do parser.py para o log da nossa API
     old_stdout = sys.stdout
     sys.stdout = buffer = io.StringIO()
     
@@ -133,7 +132,6 @@ async def fetch_and_rebuild(force: bool = False):
         )
     finally:
         sys.stdout = old_stdout
-        # Adiciona o que o parser printou ao nosso log
         for line in buffer.getvalue().split('\n'):
             if line.strip(): _SYNC_LOGS.append(line.strip())
 
@@ -273,7 +271,7 @@ async def status():
 async def _rodar_sync_bg():
     global _SYNC_ATIVO, _SYNC_LOGS
     _SYNC_ATIVO = True
-    _SYNC_LOGS = [] # Limpa os logs antigos
+    _SYNC_LOGS = [] 
     try:
         if META_FILE.exists(): META_FILE.unlink()
         await fetch_and_rebuild(force=True)
@@ -347,11 +345,12 @@ def novidades():
 
 @app.post("/novidades/verificar")
 async def verificar_novidades():
+    global _FILMES, _SERIES, _CANAIS
     try:
-        t0 = time.time(); fa, sa, ca = list(_FILMES), list(_SERIES), list(_CANAIS)
+        t0 = time.time()
+        fa, sa, ca = list(_FILMES), list(_SERIES), list(_CANAIS)
         filmes, series, canais = await asyncio.gather(fetch_filmes(), fetch_series(), fetch_canais())
         if not filmes and not series and not canais: raise Exception("Provedor retornou vazio.")
-        global _FILMES, _SERIES, _CANAIS
         _FILMES, _SERIES, _CANAIS = filmes, series, canais
         nov = await detectar_novidades(fa, sa, ca)
         NOVIDADES_FILE.write_text(json.dumps(nov, ensure_ascii=False, indent=2), encoding="utf-8")
