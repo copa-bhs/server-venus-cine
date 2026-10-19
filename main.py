@@ -38,7 +38,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="11.5.0")
+app = FastAPI(title="IPTV Organizer Pro", version="11.6.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(notificacoes_router)
 
@@ -100,7 +100,7 @@ async def startup():
     criar_tabelas()
     if load_index_from_disk():
         _rebuild_slugs()
-        sincronizar(_FILMES, _SERIES, _CANAIS) # Garante que o SQLite receba os dados mais novos do JSON
+        sincronizar(_FILMES, _SERIES, _CANAIS)
         print(f"[✓] Carregado e Sincronizado: {_stats()}")
 
 @app.websocket("/ws")
@@ -176,18 +176,17 @@ async def info_filme(filme_id: str): return await fetch_movie_info(filme_id)
 async def info_serie(serie_id: str): return await fetch_series_info(serie_id)
 
 # ==========================================================
-# ADMIN - GERENCIAMENTO (AGORA LÊ DA MEMÓRIA)
+# ADMIN - GERENCIAMENTO (LÊ DA MEMÓRIA E SALVA NO BANCO)
 # ==========================================================
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     filmes = _FILMES
     if q: filmes = [f for f in filmes if q.lower() in (f.get("titulo") or "").lower()]
     resp = paginate(filmes, page, size)
-    # Adiciona o ID do banco (pk) se existir para permitir edição
     itens_db = {f.iptv_id: f.id for f in db.query(FilmeDB).all()}
     for it in resp["items"]:
         it["db_id"] = itens_db.get(str(it.get("id")), 0)
-        it["editado"] = False # Pode puxar do banco se necessário
+        it["editado"] = False
     return resp
 
 @app.get("/admin/series")
@@ -217,10 +216,8 @@ def admin_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
     elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
     else: raise HTTPException(400, "inválido")
     
-    if it:
-        return {c.name: getattr(it, c.name) for c in it.__table__.columns}
+    if it: return {c.name: getattr(it, c.name) for c in it.__table__.columns}
         
-    # Se não está no banco ainda, puxa da memória
     lista = _FILMES if tipo == "filme" else (_SERIES if tipo == "serie" else _CANAIS)
     mem_item = next((x for x in lista if str(x.get("id")) == str(item_id)), None)
     if not mem_item: raise HTTPException(404, "Item não encontrado")
@@ -254,7 +251,6 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
     return f"/uploads/{sub}/{nome}"
 
 def _upsert_db_item(db, tipo, item_id, form_data, uploads):
-    # Função auxiliar para salvar no banco e na memória
     global _FILMES, _SERIES, _CANAIS
     obj = None
     if tipo == "filme": obj = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
@@ -275,7 +271,6 @@ def _upsert_db_item(db, tipo, item_id, form_data, uploads):
     if hasattr(obj, 'editado'): obj.editado = True
     db.commit(); db.refresh(obj)
     
-    # Atualiza na memória
     lista = _FILMES if tipo == "filme" else (_SERIES if tipo == "serie" else _CANAIS)
     for it in lista:
         if str(it.get("id")) == str(item_id):
@@ -407,7 +402,7 @@ async def force_sync_status():
     return {"ativo": _SYNC_ATIVO, "stats": _stats(), "logs": _SYNC_LOGS}
 
 # ==========================================================
-# SLIDER
+# SLIDER (CORRIGIDO AQUI!)
 # ==========================================================
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
@@ -423,14 +418,28 @@ def admin_slider_listar(db: Session = Depends(get_db)):
 
 @app.post("/admin/slider")
 async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(...), db: Session = Depends(get_db)):
-    global _HOME_CACHE_TS
-    # Busca o ID interno do banco pelo IPTV ID
+    global _HOME_CACHE_TS, _FILMES, _SERIES
+    
+    # ⚡ CORREÇÃO: Busca no banco. Se não achar, busca na memória e insere no banco.
     item_db = None
-    if ref_tipo == "filme": item_db = db.query(FilmeDB).filter(FilmeDB.iptv_id == ref_id).first()
-    elif ref_tipo == "serie": item_db = db.query(SerieDB).filter(SerieDB.iptv_id == ref_id).first()
-    
-    if not item_db: raise HTTPException(404, "Item não encontrado no banco.")
-    
+    if ref_tipo == "filme":
+        item_db = db.query(FilmeDB).filter(FilmeDB.iptv_id == ref_id).first()
+        if not item_db:
+            mem_item = next((x for x in _FILMES if str(x.get("id")) == str(ref_id)), None)
+            if mem_item:
+                item_db = FilmeDB(iptv_id=ref_id, titulo=mem_item.get("titulo"), capa=mem_item.get("capa"), ano=mem_item.get("ano"), categoria=mem_item.get("categoria"), url=mem_item.get("url") or "")
+                db.add(item_db); db.commit(); db.refresh(item_db)
+    elif ref_tipo == "serie":
+        item_db = db.query(SerieDB).filter(SerieDB.iptv_id == ref_id).first()
+        if not item_db:
+            mem_item = next((x for x in _SERIES if str(x.get("id")) == str(ref_id)), None)
+            if mem_item:
+                item_db = SerieDB(iptv_id=ref_id, titulo=mem_item.get("titulo"), capa=mem_item.get("capa"), ano=mem_item.get("ano"), categoria=mem_item.get("categoria"))
+                db.add(item_db); db.commit(); db.refresh(item_db)
+
+    if not item_db: 
+        raise HTTPException(404, "Item não encontrado no banco nem na memória.")
+
     ultimo = db.query(SlideDB).order_by(SlideDB.ordem.desc()).first(); proxima = (ultimo.ordem + 1) if ultimo else 0
     novo = SlideDB(ordem=proxima, ref_tipo=ref_tipo, ref_id=item_db.id, ativo=True)
     db.add(novo); db.commit(); db.refresh(novo); _HOME_CACHE_TS = 0
