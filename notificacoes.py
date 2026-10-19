@@ -91,13 +91,12 @@ async def listar_historico():
 async def listar_pedidos():
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # Busca todos os pedidos sem filtros para evitar erro de índice composto
-        docs = db_firestore.collection('pedidos').stream()
+        # ⚡ CORREÇÃO: Busca na coleção 'pedidos_conteudo' (nome que está no app)
+        docs = db_firestore.collection('pedidos_conteudo').stream()
         out = []
         for doc in docs:
             d = doc.to_dict()
             
-            # Filtra no Python: se não tiver status, consideramos pendente.
             status = d.get('status', 'pendente')
             if status != 'pendente':
                 continue
@@ -109,8 +108,16 @@ async def listar_pedidos():
             else:
                 d['createdAt'] = None
                 
-            d['id'] = doc.id
-            out.append(d)
+            # ⚡ CORREÇÃO: Mapeia os campos que o app envia (titulo/tipo) para o painel ler (title/type)
+            out.append({
+                "id": doc.id,
+                "title": d.get('titulo', 'Desconhecido'),
+                "type": d.get('tipo', 'filme'),
+                "status": status,
+                "createdAt": d['createdAt'],
+                "capa": d.get('capa', ''),
+                "id_iptv": d.get('id_iptv', '')
+            })
             
         print(f"[Pedidos] Encontrados {len(out)} pedidos pendentes.")
         return {"ok": True, "items": out}
@@ -122,6 +129,7 @@ async def listar_pedidos():
 async def concluir_pedido(pedido_id: str):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        db_firestore.collection('pedidos').document(pedido_id).update({'status': 'concluido'})
+        # ⚡ CORREÇÃO: Atualiza na coleção correta
+        db_firestore.collection('pedidos_conteudo').document(pedido_id).update({'status': 'concluido'})
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
