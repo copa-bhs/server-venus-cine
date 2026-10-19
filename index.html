@@ -196,7 +196,9 @@ const Api = {
     forceSyncStatus() { return this.get('/admin/force-sync/status'); },
     iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
     iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload),
-    iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items })
+    iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items }),
+    iptvImportarLoteBg: (tipo, qtd) => Api.post(`/admin/iptv/importar-lote-bg?tipo=${tipo}&quantidade=${qtd}`),
+    iptvImportarLoteBgStatus: () => Api.get('/admin/iptv/importar-lote-bg/status')
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -293,7 +295,6 @@ const Views = {
         const data = await Api.pedidos().catch(() => ({ items: [] }));
         const itens = data.items || [];
 
-        // Atualiza o badge do menu
         const badge = document.getElementById('badge-pedidos');
         if (itens.length > 0) { badge.textContent = itens.length; badge.classList.remove('hidden'); }
         else badge.classList.add('hidden');
@@ -345,13 +346,46 @@ const Views = {
     },
 
     // ============================================================
-    // IPTV DIRETO (BUSCA E ADIÇÃO EM LOTE)
+    // IPTV DIRETO (IMPOTAR LOTE + BUSCA MANUAL)
     // ============================================================
     async buscaIptv(c) {
         c.innerHTML = `
+            <!-- PAINEL DE IMPORTAÇÃO EM MASSA -->
+            <div class="stat-card rounded-xl p-5 mb-6 border-purple-500/30 bg-purple-600/5">
+                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-layer-group text-purple-400 mr-2"></i> Importação em Massa</div>
+                <p class="text-xs text-gray-400 mb-4">Puxe uma grande quantidade de itens diretamente do provedor para o banco de dados, sem precisar pesquisar um por um.</p>
+                
+                <div class="flex flex-wrap gap-2 items-end">
+                    <div class="flex-1 min-w-[140px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">O que importar?</label>
+                        <select id="imp-tipo" class="input-dark">
+                            <option value="filme">🎬 Filmes</option>
+                            <option value="serie">📺 Séries</option>
+                            <option value="canal">📡 Canais</option>
+                        </select>
+                    </div>
+                    <div class="flex-1 min-w-[140px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">Quantidade</label>
+                        <select id="imp-qtd" class="input-dark">
+                            <option value="50">50 itens</option>
+                            <option value="100">100 itens</option>
+                            <option value="500">500 itens</option>
+                            <option value="1000">1000 itens</option>
+                            <option value="-1">Tudo (Todos)</option>
+                        </select>
+                    </div>
+                    <button onclick="Views._importarLoteBg()" id="btn-imp-lote" class="h-10 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold flex items-center gap-2">
+                        <i class="fa-solid fa-cloud-arrow-down"></i> Importar
+                    </button>
+                </div>
+                
+                <div id="imp-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-48 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1"></div>
+            </div>
+
+            <!-- BUSCA MANUAL -->
             <div class="stat-card rounded-xl p-5 mb-6 border-blue-500/30 bg-blue-600/5">
-                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Direta no Servidor IPTV</div>
-                <p class="text-xs text-gray-400 mb-4">Pesquise e adicione. Você pode selecionar vários itens e adicionar todos de uma vez.</p>
+                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Manual no Provedor</div>
+                <p class="text-xs text-gray-400 mb-4">Pesquise um título específico. Você pode selecionar vários e adicionar de uma vez.</p>
                 
                 <div class="flex flex-wrap gap-2 items-end">
                     <div class="flex-1 min-w-[140px]">
@@ -379,6 +413,47 @@ const Views = {
             <div id="iptv-resultados" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
         `;
         document.getElementById('iptv-busca').onkeydown = (e) => { if (e.key === 'Enter') Views._iptvBuscar(); };
+    },
+
+    async _importarLoteBg() {
+        const tipo = document.getElementById('imp-tipo').value;
+        const qtd = parseInt(document.getElementById('imp-qtd').value);
+        const btn = document.getElementById('btn-imp-lote');
+        const box = document.getElementById('imp-logs-area');
+
+        if (!confirm(`Importar ${qtd === -1 ? 'todos os' : qtd} ${tipo}(s) do provedor? Isso pode demorar.`)) return;
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Importando...';
+        box.classList.remove('hidden');
+        box.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
+
+        try {
+            const r = await Api.iptvImportarLoteBg(tipo, qtd);
+            if (!r.ok) throw new Error(r.msg);
+            Toast.show('🚀 Importação iniciada!', 'info', 4000);
+            
+            const timer = setInterval(async () => {
+                const st = await Api.iptvImportarLoteBgStatus();
+                box.innerHTML = st.logs.map(l => `<div>${esc(l)}</div>`).join('');
+                box.scrollTop = box.scrollHeight;
+
+                if (!st.ativo) {
+                    clearInterval(timer);
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Importar';
+                    Toast.show('✅ Importação concluída!', 'success', 5000);
+                    pollStatus();
+                    Router.render();
+                }
+            }, 2000);
+
+        } catch (e) {
+            Toast.show('Erro: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Importar';
+            box.classList.add('hidden');
+        }
     },
 
     async _iptvBuscar() {
