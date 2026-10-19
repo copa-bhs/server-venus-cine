@@ -44,7 +44,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.9.0")
+app = FastAPI(title="IPTV Organizer Pro", version="10.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -417,20 +417,24 @@ class IPTVAddPayload(BaseModel):
 
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
+    print(f"[IPTV Busca] Iniciando busca por '{q}' (Tipo: {tipo})")
     q_norm = _normalizar_busca(q)
     
     action = "get_vod_streams" if tipo == "filme" else "get_series"
     url = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}"
     
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
+            print(f"[IPTV Busca] Chamando API do provedor...")
             r = await client.get(url)
             data = r.json()
+            print(f"[IPTV Busca] API respondeu. Tamanho da lista: {len(data) if isinstance(data, list) else 'Formato inválido'}")
         except Exception as e:
+            print(f"[IPTV Busca] ERRO: {e}")
             raise HTTPException(500, f"Erro ao conectar no servidor IPTV: {e}")
             
     if not isinstance(data, list):
-        raise HTTPException(500, "Servidor IPTV retornou formato inválido.")
+        raise HTTPException(500, "Servidor IPTV retornou formato inválido (não é uma lista). Pode ser bloqueio de Cloudflare ou erro de autenticação.")
         
     if tipo == "filme":
         existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id}
@@ -469,7 +473,8 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
                 "tipo": tipo
             })
             
-    return {"items": resultados[:100]} # Limita a 100 resultados por busca
+    print(f"[IPTV Busca] Encontrados {len(resultados)} itens novos.")
+    return {"items": resultados[:100]}
 
 @app.post("/admin/iptv/adicionar")
 async def admin_iptv_adicionar(payload: IPTVAddPayload, db: Session = Depends(get_db)):

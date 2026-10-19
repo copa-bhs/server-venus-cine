@@ -175,7 +175,10 @@ const Api = {
             opts.body = JSON.stringify(body);
         }
         const r = await fetch(API + path, opts);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.ok) {
+            const erro = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+            throw new Error(erro.detail || `HTTP ${r.status}`);
+        }
         return await r.json();
     },
     status() { return this.get('/status'); },
@@ -360,7 +363,7 @@ const Views = {
         
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
-        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar alguns segundos.</div></div>`;
+        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar de 10 a 60 segundos dependendo do tamanho do catálogo.</div></div>`;
 
         try {
             const r = await Api.iptvBuscar(q, tipo);
@@ -386,7 +389,7 @@ const Views = {
                 `).join('');
             }
         } catch (e) {
-            box.innerHTML = `<div class="col-span-full text-center py-8 text-red-400"><i class="fa-solid fa-triangle-exclamation mb-2"></i><br>${esc(e.message)}</div>`;
+            box.innerHTML = `<div class="col-span-full text-center py-8 text-red-400"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i><br><span class="font-bold">Erro:</span> ${esc(e.message)}</div>`;
         }
 
         btn.disabled = false;
