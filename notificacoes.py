@@ -4,6 +4,7 @@ from firebase_admin import credentials, firestore, messaging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 router = APIRouter(prefix="/admin/notificacoes", tags=["notificações"])
 
@@ -16,7 +17,7 @@ try:
     db_firestore = firestore.client()
     print("[Firebase] Admin SDK inicializado com sucesso.")
 except Exception as e:
-    print(f"[Firebase] ERRO ao inicializar: {e}.")
+    print(f"[Firebase] ERRO ao inicializar: {e}. Verifique firebase-key.json.")
     db_firestore = None
 
 class NotificacaoPayload(BaseModel):
@@ -91,16 +92,10 @@ async def listar_pedidos():
         for doc in docs:
             d = doc.to_dict()
             if d.get('status', 'pendente') != 'pendente': continue
-            d['id'] = doc.id
-            # Normaliza os dados para o painel
             out.append({
-                "id": doc.id,
-                "title": d.get('titulo', 'Desconhecido'),
-                "type": d.get('tipo', 'filme'),
-                "status": 'pendente',
-                "createdAt": d.get('createdAt').isoformat() if d.get('createdAt') else None,
-                "solicitanteNome": d.get('solicitanteNome', 'Anônimo'),
-                "solicitanteUid": d.get('solicitanteUid', '')
+                "id": doc.id, "title": d.get('titulo', 'Desconhecido'), "type": d.get('tipo', 'filme'),
+                "status": 'pendente', "createdAt": d.get('createdAt').isoformat() if d.get('createdAt') else None,
+                "solicitanteNome": d.get('solicitanteNome', 'Anônimo'), "solicitanteUid": d.get('solicitanteUid', '')
             })
         return {"ok": True, "items": out}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
@@ -122,20 +117,35 @@ async def concluir_pedido(pedido_id: str):
             # 1. Atualiza o status no Firestore
             doc_ref.update({'status': 'concluido'})
             
-            # 2. Envia a notificação automática de agradecimento
+            # 2. Mensagem de agradecimento
+            tipo_str = "Série" if tipo == "serie" else ("Canal" if tipo == "canal" else "Filme")
+            msg_titulo = "Pedido Aprovado! 🎉"
+            msg_corpo = f"Obrigado {nome}! O {tipo_str} '{titulo}' que você pediu foi adicionado ao catálogo e marcado com o seu nome no perfil."
+            
+            # 3. ⚡ SALVA NA TELA DE NOTIFICAÇÕES IN-APP (Firestore)
+            doc_notif = db_firestore.collection('notificacoes').document()
+            doc_notif.set({
+                'title': msg_titulo,
+                'body': msg_corpo,
+                'imageUrl': d.get('capa', ''),
+                'type': 'geral', 
+                'createdAt': firestore.SERVER_TIMESTAMP,
+                'readBy': [],
+                'deletedBy': []
+            })
+            
+            # 4. ⚡ ENVIA O PUSH NOTIFICATION (FCM)
             if uid:
                 tokens = [t.id for t in db_firestore.collection('usuarios').document(uid).collection('fcm_tokens').stream()]
                 if tokens:
-                    tipo_str = "Série" if tipo == "serie" else ("Canal" if tipo == "canal" else "Filme")
                     msg = messaging.MulticastMessage(
-                        notification=messaging.Notification(
-                            title="Pedido Aprovado! 🎉",
-                            body=f"Obrigado {nome}! O {tipo_str} '{titulo}' que você pediu foi adicionado ao catálogo e marcado com o seu nome no perfil."
-                        ),
+                        notification=messaging.Notification(title=msg_titulo, body=msg_corpo),
                         tokens=tokens,
                         android=messaging.AndroidConfig(priority='high')
                     )
                     messaging.send_each_for_multicast(msg)
                     
         return {"ok": True}
-    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+    except Exception as e: 
+        print(f"Erro ao concluir: {e}")
+        raise HTTPException(500, f"Erro: {e}")
