@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from config import (
     CACHE_TTL, BASE_DIR, CACHE_DIR,
@@ -25,8 +26,9 @@ from config import (
     META_FILE, NOVIDADES_FILE,
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, PORT,
     TMDB_ENABLED, TMDB_MAX_PER_CYCLE, PUBLIC_BASE_URL,
+    IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD
 )
-from parser import fetch_filmes, fetch_series, fetch_canais
+from parser import fetch_filmes, fetch_series, fetch_canais, _clean_name, _extract_year
 from info import fetch_movie_info, fetch_series_info
 from home import build_home_async, _slugify
 from proxy import (
@@ -42,7 +44,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="9.8.0")
+app = FastAPI(title="IPTV Organizer Pro", version="9.9.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -286,7 +288,6 @@ async def _wipe_all_bg():
     _SYNC_ATIVO = True
     _SYNC_LOGS = ["[!] INICIANDO LIMPEZA TOTAL DO SISTEMA..."]
     try:
-        # 1. Apaga JSONs e Cache
         for f in [FILMES_FILE, SERIES_FILE, CANAIS_FILE, META_FILE, NOVIDADES_FILE]:
             if f.exists(): f.unlink()
         for f in CACHE_DIR.glob("slug_map_*.json"):
@@ -294,12 +295,10 @@ async def _wipe_all_bg():
         if (CACHE_DIR / "hero_cache.json").exists():
             (CACHE_DIR / "hero_cache.json").unlink()
             
-        # 2. Apaga o Banco de Dados Inteiro
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         _SYNC_LOGS.append("[✓] Banco de dados e cache apagados.")
 
-        # 3. Limpa Memória
         _FILMES, _SERIES, _CANAIS = [], [], []
         _SYNC_LOGS.append("[•] Baixando TUDO do servidor IPTV novamente...")
         
@@ -405,6 +404,118 @@ async def info_serie(serie_id: str, force: bool = False):
     except ValueError as e: raise HTTPException(404, str(e))
     except httpx.RequestError as e: raise HTTPException(502, f"Falha: {e}")
 
+# ==========================================================
+# ADMIN - BUSCA NO SERVIDOR IPTV E ADIÇÃO MANUAL
+# ==========================================================
+class IPTVAddPayload(BaseModel):
+    id: str
+    tipo: str
+    titulo: str
+    capa: Optional[str] = None
+    ano: Optional[int] = None
+    url: Optional[str] = None
+
+@app.get("/admin/iptv/buscar")
+async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
+    q_norm = _normalizar_busca(q)
+    
+    action = "get_vod_streams" if tipo == "filme" else "get_series"
+    url = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}"
+    
+    async with httpx.AsyncClient(timeout=300) as client:
+        try:
+            r = await client.get(url)
+            data = r.json()
+        except Exception as e:
+            raise HTTPException(500, f"Erro ao conectar no servidor IPTV: {e}")
+            
+    if not isinstance(data, list):
+        raise HTTPException(500, "Servidor IPTV retornou formato inválido.")
+        
+    if tipo == "filme":
+        existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id}
+    else:
+        existentes = {s.iptv_id for s in db.query(SerieDB).all() if s.iptv_id}
+        
+    resultados = []
+    for item in data:
+        if not isinstance(item, dict): continue
+        
+        if tipo == "filme":
+            sid = str(item.get("stream_id") or "")
+            nome = item.get("name") or ""
+            capa = item.get("stream_icon") or item.get("cover")
+            ano = _extract_year(nome)
+            ext = item.get("container_extension") or "mp4"
+            stream_url = f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.{ext}"
+        else:
+            sid = str(item.get("series_id") or "")
+            nome = item.get("name") or ""
+            capa = item.get("cover") or item.get("stream_icon")
+            ano = _extract_year(item.get("releaseDate")) or _extract_year(nome)
+            stream_url = ""
+            
+        if not sid: continue
+        
+        if q_norm in _normalizar_busca(nome):
+            if sid in existentes: continue
+                
+            resultados.append({
+                "id": sid,
+                "titulo": _clean_name(nome) or nome,
+                "capa": capa,
+                "ano": ano,
+                "url": stream_url,
+                "tipo": tipo
+            })
+            
+    return {"items": resultados[:100]} # Limita a 100 resultados por busca
+
+@app.post("/admin/iptv/adicionar")
+async def admin_iptv_adicionar(payload: IPTVAddPayload, db: Session = Depends(get_db)):
+    global _FILMES, _SERIES
+    if payload.tipo == "filme":
+        if db.query(FilmeDB).filter(FilmeDB.iptv_id == payload.id).first():
+            return {"ok": True, "msg": "Já estava no banco"}
+            
+        novo_db = FilmeDB(
+            iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa,
+            ano=payload.ano, categoria="Manual", url=payload.url or ""
+        )
+        db.add(novo_db)
+        db.commit()
+        
+        _FILMES.append({
+            "id": payload.id, "tipo": "filme", "titulo": payload.titulo,
+            "capa": payload.capa, "ano": payload.ano, "categoria": "Manual", "url": payload.url
+        })
+        _rebuild_slugs()
+        _save_all()
+        
+    elif payload.tipo == "serie":
+        if db.query(SerieDB).filter(SerieDB.iptv_id == payload.id).first():
+            return {"ok": True, "msg": "Já estava no banco"}
+            
+        novo_db = SerieDB(
+            iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa,
+            ano=payload.ano, categoria="Manual"
+        )
+        db.add(novo_db)
+        db.commit()
+        
+        _SERIES.append({
+            "id": payload.id, "tipo": "serie", "titulo": payload.titulo,
+            "capa": payload.capa, "ano": payload.ano, "categoria": "Manual"
+        })
+        _rebuild_slugs()
+        _save_all()
+        
+    await manager.broadcast("catalogo_sincronizado", _stats())
+    return {"ok": True}
+
+# ==========================================================
+# ADMIN - GERENCIAMENTO LOCAL
+# ==========================================================
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(FilmeDB)

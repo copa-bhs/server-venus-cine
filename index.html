@@ -43,6 +43,7 @@
 
         <nav class="flex-1 py-3 overflow-y-auto">
             <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
+            <a href="#iptv" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="iptv"><i class="fa-solid fa-magnifying-glass w-4 text-center"></i> IPTV Direto</a>
             <a href="#notificacoes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="notificacoes"><i class="fa-solid fa-bell w-4 text-center"></i> Notificações</a>
             <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
             <a href="#filmes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="filmes"><i class="fa-solid fa-film w-4 text-center"></i> Filmes</a>
@@ -188,7 +189,11 @@ const Api = {
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
     forceSync() { return this.post('/admin/force-sync'); },
     wipeAll() { return this.post('/admin/wipe-all'); },
-    forceSyncStatus() { return this.get('/admin/force-sync/status'); }
+    forceSyncStatus() { return this.get('/admin/force-sync/status'); },
+    
+    // Busca IPTV
+    iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
+    iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload)
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -212,7 +217,8 @@ const Router = {
             a.classList.toggle('active', a.dataset.route === h);
         });
         const titles = {
-            dashboard: 'Dashboard', notificacoes: 'Notificações Push',
+            dashboard: 'Dashboard', iptv: 'IPTV Direto (Adicionar Manual)',
+            notificacoes: 'Notificações Push',
             slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
             novidades: 'Novidades', proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
@@ -228,6 +234,7 @@ const Router = {
         c.innerHTML = `<div class="flex items-center justify-center h-64 text-gray-500"><i class="fa-solid fa-circle-notch fa-spin text-2xl"></i></div>`;
         try {
             if (this.current === 'dashboard') await Views.dashboard(c);
+            else if (this.current === 'iptv') await Views.buscaIptv(c);
             else if (this.current === 'notificacoes') await Views.notificacoes(c);
             else if (this.current === 'slider') await Views.slider(c);
             else if (this.current === 'filmes') await Views.list(c, 'filme');
@@ -255,7 +262,6 @@ const Views = {
                 ${this.statCard('Slugs proxy', fmt(proxy.slugs_carregados), 'fa-link', 'text-yellow-400')}
             </div>
 
-            <!-- CARD DE SINCRONIZAÇÃO E LIMPEZA -->
             <div class="stat-card rounded-xl p-5 mb-6 border-red-600/30 bg-red-600/5">
                 <div class="flex flex-col md:flex-row items-center gap-4 mb-4">
                     <div class="w-14 h-14 rounded-full bg-red-600/20 flex items-center justify-center flex-shrink-0">
@@ -274,7 +280,6 @@ const Views = {
                         </button>
                     </div>
                 </div>
-                
                 <div id="sync-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-48 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1"></div>
             </div>
 
@@ -309,6 +314,94 @@ const Views = {
             document.getElementById('btn-wipe-all').disabled = true;
             document.getElementById('btn-force-sync').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizando...';
             Actions.pollSync();
+        }
+    },
+
+    // ============================================================
+    // IPTV DIRETO (BUSCA E ADIÇÃO)
+    // ============================================================
+    async buscaIptv(c) {
+        c.innerHTML = `
+            <div class="stat-card rounded-xl p-5 mb-6 border-blue-500/30 bg-blue-600/5">
+                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Direta no Servidor IPTV</div>
+                <p class="text-xs text-gray-400 mb-4">Pesquise filmes ou séries que não estão no banco. O sistema oculta o que já foi adicionado.</p>
+                
+                <div class="flex flex-wrap gap-2 items-end">
+                    <div class="flex-1 min-w-[140px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">Tipo</label>
+                        <select id="iptv-tipo" class="input-dark">
+                            <option value="filme">🎬 Filme</option>
+                            <option value="serie">📺 Série</option>
+                        </select>
+                    </div>
+                    <div class="flex-[2] min-w-[220px]">
+                        <label class="text-[10px] text-gray-500 block mb-1">Buscar título</label>
+                        <input id="iptv-busca" class="input-dark" placeholder="Digite o nome do filme ou série...">
+                    </div>
+                    <button onclick="Views._iptvBuscar()" id="btn-iptv-buscar" class="h-10 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold flex items-center gap-2">
+                        <i class="fa-solid fa-magnifying-glass"></i> Buscar no Provedor
+                    </button>
+                </div>
+            </div>
+
+            <div id="iptv-resultados" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+        `;
+        
+        document.getElementById('iptv-busca').onkeydown = (e) => { if (e.key === 'Enter') Views._iptvBuscar(); };
+    },
+
+    async _iptvBuscar() {
+        const q = document.getElementById('iptv-busca').value.trim();
+        const tipo = document.getElementById('iptv-tipo').value;
+        if (!q) return Toast.show('Digite algo para buscar', 'warn');
+
+        const btn = document.getElementById('btn-iptv-buscar');
+        const box = document.getElementById('iptv-resultados');
+        
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
+        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar alguns segundos.</div></div>`;
+
+        try {
+            const r = await Api.iptvBuscar(q, tipo);
+            const items = r.items || [];
+
+            if (items.length === 0) {
+                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-check-circle text-4xl text-green-500 mb-3"></i><div class="text-sm font-bold text-white">Tudo em ordem!</div><div class="text-xs text-gray-400">Nenhum resultado novo encontrado no provedor ou todos já estão no banco.</div></div>`;
+            } else {
+                box.innerHTML = items.map(it => `
+                    <div class="stat-card rounded-xl p-3 flex items-center gap-3 border-[#333]">
+                        <div class="w-16 h-24 rounded bg-gray-900 overflow-hidden flex-shrink-0">
+                            ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-[10px] text-gray-600">sem capa</div>'}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-[10px] text-blue-400 font-bold mb-1">ID: ${it.id}</div>
+                            <div class="text-xs font-bold text-white truncate">${esc(it.titulo)}</div>
+                            <div class="text-[10px] text-gray-500 mb-2">${it.ano || '—'}</div>
+                            <button onclick='Views._iptvAdicionar(${JSON.stringify(it)})' class="w-full h-8 rounded bg-green-600/20 text-green-400 hover:bg-green-600 hover:text-white text-xs font-bold transition">
+                                <i class="fa-solid fa-plus mr-1"></i> Adicionar
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        } catch (e) {
+            box.innerHTML = `<div class="col-span-full text-center py-8 text-red-400"><i class="fa-solid fa-triangle-exclamation mb-2"></i><br>${esc(e.message)}</div>`;
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> Buscar no Provedor';
+    },
+
+    async _iptvAdicionar(item) {
+        if (!confirm(`Adicionar "${item.titulo}" ao catálogo?`)) return;
+        try {
+            const r = await Api.iptvAdicionar(item);
+            if (!r.ok) throw new Error(r.msg || 'Erro');
+            Toast.show('✅ Adicionado com sucesso!', 'success');
+            Views._iptvBuscar(); // Refaz a busca para tirar o item da lista
+        } catch (e) {
+            Toast.show('Erro: ' + e.message, 'error');
         }
     },
 
