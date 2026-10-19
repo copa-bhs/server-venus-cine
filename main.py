@@ -32,7 +32,7 @@ from home import build_home_async, _slugify
 from proxy import (
     build_slug_map, get_by_slug, get_by_id,
     stream_proxy, stats as proxy_stats, total_slugs,
-    _SLUG_MAP, _ID_MAP
+    limpar_tudo as limpar_proxy, _SLUG_MAP, _ID_MAP
 )
 import tmdb
 
@@ -43,15 +43,12 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="10.0.0")
+app = FastAPI(title="IPTV Organizer Pro", version="10.5.0")
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    CORSMiddleware, allow_origins=["*"], allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
+    allow_headers=["*"], expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
     max_age=3600,
 )
 
@@ -78,18 +75,15 @@ def _stats() -> dict:
 def _load_json(path, default=None):
     if not path.exists(): return default if default is not None else []
     try: return json.loads(path.read_text(encoding="utf-8"))
-    except Exception: return default if default is not None else []
+    except: return default if default is not None else []
 
 def load_index_from_disk() -> bool:
     global _FILMES, _SERIES, _CANAIS
     if not (FILMES_FILE.exists() and SERIES_FILE.exists() and CANAIS_FILE.exists()): return False
     try:
-        _FILMES = _load_json(FILMES_FILE)
-        _SERIES = _load_json(SERIES_FILE)
-        _CANAIS = _load_json(CANAIS_FILE)
+        _FILMES = _load_json(FILMES_FILE); _SERIES = _load_json(SERIES_FILE); _CANAIS = _load_json(CANAIS_FILE)
         return True
-    except Exception:
-        return False
+    except: return False
 
 def _save_all():
     FILMES_FILE.write_text(json.dumps(_FILMES, ensure_ascii=False), encoding="utf-8")
@@ -101,9 +95,7 @@ def _rebuild_slugs():
     print(f"[✓] Slugs gerados: {total_slugs()}")
 
 def paginate(items, page, size):
-    total = len(items)
-    tp = (total + size - 1) // size if size else 0
-    st = (page - 1) * size
+    total = len(items); tp = (total + size - 1) // size if size else 0; st = (page - 1) * size
     return {"page": page, "page_size": size, "total_items": total, "total_pages": tp, "has_next": page < tp, "has_prev": page > 1, "items": items[st:st + size]}
 
 def _card(item, tipo=None):
@@ -116,15 +108,10 @@ def _normalizar_busca(texto: str) -> str:
     t = re.sub(r'\b(the|os|as|o|a|um|uma|de|do|da)\b', ' ', t)
     return " ".join(t.split())
 
-# ==========================================================
-# STARTUP
-# ==========================================================
 @app.on_event("startup")
 async def startup():
     print("[•] Startup...")
     criar_tabelas()
-    
-    # Apenas carrega o que já está no disco, NÃO baixa nada da internet
     if load_index_from_disk():
         _rebuild_slugs()
         sincronizar(_FILMES, _SERIES, _CANAIS)
@@ -154,47 +141,37 @@ async def status():
     return {
         "cached": False, "age_seconds": 0, "ttl_seconds": CACHE_TTL, "valid": True,
         "auto_refresh_ativo": False, "sync_ativo": _SYNC_ATIVO, "tmdb_ativo": TMDB_ENABLED, 
-        "storage": "3 JSONs + SQLite", "public_base_url": PUBLIC_BASE_URL,
+        "public_base_url": PUBLIC_BASE_URL,
         "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}, 
         "stats": _stats(), "ws_clientes": manager.total()
     }
 
-# ==========================================================
-# LIMPEZA TOTAL (WIPE)
-# ==========================================================
 async def _wipe_all_bg():
     global _SYNC_ATIVO, _SYNC_LOGS, _FILMES, _SERIES, _CANAIS
     _SYNC_ATIVO = True
-    _SYNC_LOGS = ["[!] INICIANDO LIMPEZA TOTAL DO SISTEMA..."]
+    _SYNC_LOGS = ["[!] INICIANDO LIMPEZA TOTAL..."]
     try:
         for f in [FILMES_FILE, SERIES_FILE, CANAIS_FILE, META_FILE, NOVIDADES_FILE]:
             if f.exists(): f.unlink()
-        for f in CACHE_DIR.glob("slug_map_*.json"):
-            f.unlink()
-        if (CACHE_DIR / "hero_cache.json").exists():
-            (CACHE_DIR / "hero_cache.json").unlink()
+        for f in CACHE_DIR.glob("slug_map_*.json"): f.unlink()
+        if (CACHE_DIR / "hero_cache.json").exists(): (CACHE_DIR / "hero_cache.json").unlink()
             
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         
-        _FILMES.clear()
-        _SERIES.clear()
-        _CANAIS.clear()
+        _FILMES.clear(); _SERIES.clear(); _CANAIS.clear()
+        limpar_proxy() # Limpa o mapa do proxy
         
-        _SLUG_MAP.clear()
-        _ID_MAP.clear()
-        
-        _SYNC_LOGS.append("[✓] Banco de dados, cache e memória apagados com sucesso.")
-        _SYNC_LOGS.append("[✓] O sistema está totalmente vazio. Use 'IPTV Direto' para adicionar novos itens.")
+        _SYNC_LOGS.append("[✓] Banco de dados, cache, proxy e memória apagados.")
+        await manager.broadcast("catalogo_sincronizado", _stats())
     except Exception as e:
-        _SYNC_LOGS.append(f"[!] Erro na limpeza: {e}")
-        print(f"[!] Erro na limpeza: {e}")
+        _SYNC_LOGS.append(f"[!] Erro: {e}")
     finally:
         _SYNC_ATIVO = False
 
 @app.post("/admin/wipe-all")
 async def wipe_all():
-    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a operação atual terminar."}
+    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde."}
     asyncio.create_task(_wipe_all_bg())
     return {"ok": True, "msg": "Limpando tudo..."}
 
@@ -202,13 +179,10 @@ async def wipe_all():
 async def force_sync_status():
     return {"ativo": _SYNC_ATIVO, "stats": _stats(), "logs": _SYNC_LOGS}
 
-# ==========================================================
-# HOME / LISTAGENS BÁSICAS
-# ==========================================================
 @app.get("/home")
 async def home(force: bool = False):
     global _HOME_CACHE, _HOME_CACHE_TS
-    if not _FILMES and not _SERIES: raise HTTPException(503, "Catálogo vazio.")
+    if not _FILMES and not _SERIES: return {"hero": [], "colecoes": [], "trailers": [], "stats": _stats()}
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < _HOME_CACHE_TTL: return _HOME_CACHE
     _HOME_CACHE = await build_home_async({"filmes": _FILMES, "series": _SERIES, "stats": _stats()}, force_hero=force)
     _HOME_CACHE_TS = time.time()
@@ -234,9 +208,7 @@ def listar_canais(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=MAX
 
 @app.get("/buscar")
 def buscar(q: str = Query(..., min_length=1), tipo: str | None = None, page: int = Query(1, ge=1), size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)):
-    q_raw = q.lower().strip()
-    q_norm = _normalizar_busca(q)
-    resultados = []
+    q_raw = q.lower().strip(); q_norm = _normalizar_busca(q); resultados = []
     def match(item):
         tit = item.get("titulo") or ""
         if q_raw in tit.lower(): return True
@@ -251,10 +223,6 @@ def buscar(q: str = Query(..., min_length=1), tipo: str | None = None, page: int
 def categorias():
     return {"filmes": sorted({f["categoria"] for f in _FILMES if f.get("categoria")}), "series": sorted({s["categoria"] for s in _SERIES if s.get("categoria")}), "canais": sorted({c["categoria"] for c in _CANAIS if c.get("categoria")})}
 
-@app.get("/novidades")
-def novidades():
-    return {"disponivel": False}
-
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, force: bool = False):
     try: return await fetch_movie_info(filme_id, force=force)
@@ -268,7 +236,7 @@ async def info_serie(serie_id: str, force: bool = False):
     except httpx.RequestError as e: raise HTTPException(502, f"Falha: {e}")
 
 # ==========================================================
-# ADMIN - BUSCA NO SERVIDOR IPTV E ADIÇÃO MANUAL
+# ADMIN - BUSCA E ADIÇÃO NO SERVIDOR IPTV
 # ==========================================================
 class IPTVAddPayload(BaseModel):
     id: str
@@ -277,6 +245,9 @@ class IPTVAddPayload(BaseModel):
     capa: Optional[str] = None
     ano: Optional[int] = None
     url: Optional[str] = None
+
+class IPTVLotePayload(BaseModel):
+    items: list[IPTVAddPayload]
 
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
@@ -288,95 +259,67 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
         try:
             r = await client.get(url)
             data = r.json()
-        except Exception as e:
-            raise HTTPException(500, f"Erro ao conectar no servidor IPTV: {e}")
+        except Exception as e: raise HTTPException(500, f"Erro no provedor: {e}")
             
-    if not isinstance(data, list):
-        raise HTTPException(500, "Servidor IPTV retornou formato inválido.")
+    if not isinstance(data, list): raise HTTPException(500, "Provedor retornou formato inválido.")
         
-    if tipo == "filme":
-        existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id}
-    else:
-        existentes = {s.iptv_id for s in db.query(SerieDB).all() if s.iptv_id}
-        
+    existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id} if tipo == "filme" else {s.iptv_id for s in db.query(SerieDB).all() if s.iptv_id}
     resultados = []
     for item in data:
         if not isinstance(item, dict): continue
-        
         if tipo == "filme":
-            sid = str(item.get("stream_id") or "")
-            nome = item.get("name") or ""
-            capa = item.get("stream_icon") or item.get("cover")
-            ano = _extract_year(nome)
-            ext = item.get("container_extension") or "mp4"
-            stream_url = f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.{ext}"
+            sid = str(item.get("stream_id") or ""); nome = item.get("name") or ""; capa = item.get("stream_icon") or item.get("cover")
+            ano = _extract_year(nome); ext = item.get("container_extension") or "mp4"; stream_url = f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.{ext}"
         else:
-            sid = str(item.get("series_id") or "")
-            nome = item.get("name") or ""
-            capa = item.get("cover") or item.get("stream_icon")
-            ano = _extract_year(item.get("releaseDate")) or _extract_year(nome)
-            stream_url = ""
+            sid = str(item.get("series_id") or ""); nome = item.get("name") or ""; capa = item.get("cover") or item.get("stream_icon")
+            ano = _extract_year(item.get("releaseDate")) or _extract_year(nome); stream_url = ""
             
         if not sid: continue
-        
-        if q_norm in _normalizar_busca(nome):
-            if sid in existentes: continue
-                
-            resultados.append({
-                "id": sid,
-                "titulo": _clean_name(nome) or nome,
-                "capa": capa,
-                "ano": ano,
-                "url": stream_url,
-                "tipo": tipo
-            })
+        if q_norm in _normalizar_busca(nome) and sid not in existentes:
+            resultados.append({"id": sid, "titulo": _clean_name(nome) or nome, "capa": capa, "ano": ano, "url": stream_url, "tipo": tipo})
             
-    return {"items": resultados[:100]}
+    return {"items": resultados[:200]}
 
 @app.post("/admin/iptv/adicionar")
 async def admin_iptv_adicionar(payload: IPTVAddPayload, db: Session = Depends(get_db)):
     global _FILMES, _SERIES
     if payload.tipo == "filme":
-        if db.query(FilmeDB).filter(FilmeDB.iptv_id == payload.id).first():
-            return {"ok": True, "msg": "Já estava no banco"}
-            
-        novo_db = FilmeDB(
-            iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa,
-            ano=payload.ano, categoria="Manual", url=payload.url or ""
-        )
-        db.add(novo_db)
-        db.commit()
-        
-        _FILMES.append({
-            "id": payload.id, "tipo": "filme", "titulo": payload.titulo,
-            "capa": payload.capa, "ano": payload.ano, "categoria": "Manual", "url": payload.url
-        })
-        _rebuild_slugs()
-        _save_all()
-        
+        if not db.query(FilmeDB).filter(FilmeDB.iptv_id == payload.id).first():
+            db.add(FilmeDB(iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa, ano=payload.ano, categoria="Manual", url=payload.url or ""))
+            db.commit()
+            _FILMES.append({"id": payload.id, "tipo": "filme", "titulo": payload.titulo, "capa": payload.capa, "ano": payload.ano, "categoria": "Manual", "url": payload.url})
+            _rebuild_slugs(); _save_all()
     elif payload.tipo == "serie":
-        if db.query(SerieDB).filter(SerieDB.iptv_id == payload.id).first():
-            return {"ok": True, "msg": "Já estava no banco"}
-            
-        novo_db = SerieDB(
-            iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa,
-            ano=payload.ano, categoria="Manual"
-        )
-        db.add(novo_db)
-        db.commit()
-        
-        _SERIES.append({
-            "id": payload.id, "tipo": "serie", "titulo": payload.titulo,
-            "capa": payload.capa, "ano": payload.ano, "categoria": "Manual"
-        })
-        _rebuild_slugs()
-        _save_all()
-        
+        if not db.query(SerieDB).filter(SerieDB.iptv_id == payload.id).first():
+            db.add(SerieDB(iptv_id=payload.id, titulo=payload.titulo, capa=payload.capa, ano=payload.ano, categoria="Manual"))
+            db.commit()
+            _SERIES.append({"id": payload.id, "tipo": "serie", "titulo": payload.titulo, "capa": payload.capa, "ano": payload.ano, "categoria": "Manual"})
+            _rebuild_slugs(); _save_all()
     await manager.broadcast("catalogo_sincronizado", _stats())
     return {"ok": True}
 
+@app.post("/admin/iptv/adicionar-lote")
+async def admin_iptv_adicionar_lote(payload: IPTVLotePayload, db: Session = Depends(get_db)):
+    global _FILMES, _SERIES
+    adicionados = 0
+    for item in payload.items:
+        if item.tipo == "filme":
+            if not db.query(FilmeDB).filter(FilmeDB.iptv_id == item.id).first():
+                db.add(FilmeDB(iptv_id=item.id, titulo=item.titulo, capa=item.capa, ano=item.ano, categoria="Manual", url=item.url or ""))
+                _FILMES.append({"id": item.id, "tipo": "filme", "titulo": item.titulo, "capa": item.capa, "ano": item.ano, "categoria": "Manual", "url": item.url})
+                adicionados += 1
+        elif item.tipo == "serie":
+            if not db.query(SerieDB).filter(SerieDB.iptv_id == item.id).first():
+                db.add(SerieDB(iptv_id=item.id, titulo=item.titulo, capa=item.capa, ano=item.ano, categoria="Manual"))
+                _SERIES.append({"id": item.id, "tipo": "serie", "titulo": item.titulo, "capa": item.capa, "ano": item.ano, "categoria": "Manual"})
+                adicionados += 1
+    db.commit()
+    _rebuild_slugs(); _save_all()
+    await manager.broadcast("catalogo_sincronizado", _stats())
+    return {"ok": True, "adicionados": adicionados}
+
 # ==========================================================
-# ADMIN - GERENCIAMENTO LOCAL
+# ADMIN - GERENCIAMENTO LOCAL (EDITAR/DELETAR)
 # ==========================================================
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
@@ -408,6 +351,23 @@ def admin_item(tipo: str, item_id: int, db: Session = Depends(get_db)):
     if not it: raise HTTPException(404, "não encontrado")
     return {c.name: getattr(it, c.name) for c in it.__table__.columns}
 
+@app.delete("/admin/item/{tipo}/{item_id}")
+def deletar_item(tipo: str, item_id: int, db: Session = Depends(get_db)):
+    global _FILMES, _SERIES
+    if tipo == "filme":
+        it = db.query(FilmeDB).get(item_id)
+        if it: db.delete(it); db.commit()
+        _FILMES = [f for f in _FILMES if str(f.get("id")) != str(it.iptv_id)]
+    elif tipo == "serie":
+        it = db.query(SerieDB).get(item_id)
+        if it: db.delete(it); db.commit()
+        _SERIES = [s for s in _SERIES if str(s.get("id")) != str(it.iptv_id)]
+    elif tipo == "canal":
+        it = db.query(CanalDB).get(item_id)
+        if it: db.delete(it); db.commit()
+    _rebuild_slugs(); _save_all()
+    return {"ok": True}
+
 async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
     if not arq or not arq.filename: return None
     ext = Path(arq.filename).suffix.lower()
@@ -421,11 +381,11 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
 async def editar_filme(item_id: int, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(FilmeDB).get(item_id)
     if not it: raise HTTPException(404, "não encontrado")
-    if titulo is not None: it.titulo = titulo
-    if ano is not None: it.ano = ano
-    if categoria is not None: it.categoria = categoria
-    if sinopse is not None: it.sinopse = sinopse
-    if url is not None: it.url = url
+    if titulo: it.titulo = titulo
+    if ano: it.ano = ano
+    if categoria: it.categoria = categoria
+    if sinopse: it.sinopse = sinopse
+    if url: it.url = url
     if capa: it.capa = await _salvar_upload(capa, "capas")
     if banner: it.banner = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
@@ -437,10 +397,10 @@ async def editar_filme(item_id: int, titulo: Optional[str] = Form(None), ano: Op
 async def editar_serie(item_id: int, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(SerieDB).get(item_id)
     if not it: raise HTTPException(404, "não encontrada")
-    if titulo is not None: it.titulo = titulo
-    if ano is not None: it.ano = ano
-    if categoria is not None: it.categoria = categoria
-    if sinopse is not None: it.sinopse = sinopse
+    if titulo: it.titulo = titulo
+    if ano: it.ano = ano
+    if categoria: it.categoria = categoria
+    if sinopse: it.sinopse = sinopse
     if capa: it.capa = await _salvar_upload(capa, "capas")
     if banner: it.banner = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
@@ -452,14 +412,17 @@ async def editar_serie(item_id: int, titulo: Optional[str] = Form(None), ano: Op
 async def editar_canal(item_id: int, titulo: Optional[str] = Form(None), categoria: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
     it = db.query(CanalDB).get(item_id)
     if not it: raise HTTPException(404, "não encontrado")
-    if titulo is not None: it.titulo = titulo
-    if categoria is not None: it.categoria = categoria
-    if url is not None: it.url = url
+    if titulo: it.titulo = titulo
+    if categoria: it.categoria = categoria
+    if url: it.url = url
     if capa: it.capa = await _salvar_upload(capa, "capas")
     it.editado = True; db.commit(); db.refresh(it)
     await manager.broadcast("item_editado", {"tipo": "canal", "id": it.id, "titulo": it.titulo})
     return {"ok": True, "id": it.id, "titulo": it.titulo}
 
+# ==========================================================
+# SLIDER
+# ==========================================================
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
     slides = db.query(SlideDB).order_by(SlideDB.ordem).all(); out = []
@@ -516,6 +479,9 @@ async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(g
     await manager.broadcast("slider_atualizado", {"acao": "reordenar"})
     return {"ok": True}
 
+# ==========================================================
+# PROXY STREAM
+# ==========================================================
 _EPISODIO_RE = re.compile(r'^(.+?)-t(\d+)-e(\d+)$')
 
 async def _resolver_episodio_sob_demanda(slug: str):

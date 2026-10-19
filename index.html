@@ -25,6 +25,7 @@
     .template-btn { padding: 12px 10px; border-radius: 8px; background: #1a1a1a; border: 1px solid #333; font-size: 12px; font-weight: bold; cursor: pointer; transition: 0.2s; display: flex; flex-direction: column; align-items: center; gap: 6px; color: #ccc; }
     .template-btn:hover { border-color: #E50914; color: #fff; background: #222; }
     .template-btn.active { background: rgba(229,9,20,0.1); border-color: #E50914; color: #E50914; }
+    .custom-checkbox { width: 20px; height: 20px; accent-color: #22c55e; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -43,6 +44,7 @@
 
         <nav class="flex-1 py-3 overflow-y-auto">
             <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
+            <a href="#pedidos" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="pedidos"><i class="fa-solid fa-inbox w-4 text-center"></i> Pedidos <span id="badge-pedidos" class="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold hidden">0</span></a>
             <a href="#iptv" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="iptv"><i class="fa-solid fa-magnifying-glass w-4 text-center"></i> IPTV Direto</a>
             <a href="#notificacoes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="notificacoes"><i class="fa-solid fa-bell w-4 text-center"></i> Notificações</a>
             <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
@@ -169,15 +171,14 @@ const Api = {
     },
     async post(path, body = null) {
         const opts = { method: 'POST' };
-        if (body) {
-            opts.headers = { 'Content-Type': 'application/json' };
-            opts.body = JSON.stringify(body);
-        }
+        if (body) { opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(body); }
         const r = await fetch(API + path, opts);
-        if (!r.ok) {
-            const erro = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
-            throw new Error(erro.detail || `HTTP ${r.status}`);
-        }
+        if (!r.ok) { const erro = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); throw new Error(erro.detail || `HTTP ${r.status}`); }
+        return await r.json();
+    },
+    async del(path) {
+        const r = await fetch(API + path, { method: 'DELETE' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return await r.json();
     },
     status() { return this.get('/status'); },
@@ -186,12 +187,16 @@ const Api = {
     adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
+    deletarItem: (tipo, id) => Api.del(`/admin/item/${tipo}/${id}`),
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
+    pedidos() { return this.get('/admin/notificacoes/pedidos'); },
+    concluirPedido(id) { return this.post(`/admin/notificacoes/pedidos/${id}/concluir`); },
     wipeAll() { return this.post('/admin/wipe-all'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); },
     iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
-    iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload)
+    iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload),
+    iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items })
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -211,13 +216,10 @@ const Router = {
     handle() {
         const h = window.location.hash.replace('#', '') || 'dashboard';
         this.current = h;
-        document.querySelectorAll('.sidebar-link').forEach(a => {
-            a.classList.toggle('active', a.dataset.route === h);
-        });
+        document.querySelectorAll('.sidebar-link').forEach(a => { a.classList.toggle('active', a.dataset.route === h); });
         const titles = {
-            dashboard: 'Dashboard', iptv: 'IPTV Direto (Adicionar Manual)',
-            notificacoes: 'Notificações Push',
-            slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
+            dashboard: 'Dashboard', pedidos: 'Pedidos de Conteúdo', iptv: 'IPTV Direto (Adicionar Manual)',
+            notificacoes: 'Notificações Push', slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
             proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
         document.getElementById('page-title').textContent = titles[h] || h;
@@ -232,6 +234,7 @@ const Router = {
         c.innerHTML = `<div class="flex items-center justify-center h-64 text-gray-500"><i class="fa-solid fa-circle-notch fa-spin text-2xl"></i></div>`;
         try {
             if (this.current === 'dashboard') await Views.dashboard(c);
+            else if (this.current === 'pedidos') await Views.pedidos(c);
             else if (this.current === 'iptv') await Views.buscaIptv(c);
             else if (this.current === 'notificacoes') await Views.notificacoes(c);
             else if (this.current === 'slider') await Views.slider(c);
@@ -240,9 +243,7 @@ const Router = {
             else if (this.current === 'canais') await Views.list(c, 'canal');
             else if (this.current === 'proxy') await Views.proxy(c);
             else if (this.current === 'sistema') await Views.sistema(c);
-        } catch (e) {
-            c.innerHTML = `<div class="text-center py-16 text-red-400">Erro: ${esc(e.message)}</div>`;
-        }
+        } catch (e) { c.innerHTML = `<div class="text-center py-16 text-red-400">Erro: ${esc(e.message)}</div>`; }
     }
 };
 
@@ -276,32 +277,7 @@ const Views = {
                 </div>
                 <div id="sync-logs-area" class="hidden mt-4 bg-black border border-[#333] rounded-lg p-3 h-48 overflow-y-auto font-mono text-[10px] text-green-400 space-y-1"></div>
             </div>
-
-            <div class="grid md:grid-cols-3 gap-4 mb-6">
-                <div class="stat-card rounded-xl p-4">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">SQLite</div>
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="w-2 h-2 rounded-full bg-green-400"></span>
-                        <span class="text-sm font-medium">Conectado</span>
-                    </div>
-                    <div class="text-[11px] text-gray-500">Banco local ativo</div>
-                </div>
-                <div class="stat-card rounded-xl p-4">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Clientes WS</div>
-                    <div class="text-2xl font-black" id="ws-clientes">${s.ws_clientes || 0}</div>
-                    <div class="text-[11px] text-gray-500 mt-1">conectados agora</div>
-                </div>
-                <div class="stat-card rounded-xl p-4">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">TMDB</div>
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="w-2 h-2 rounded-full ${s.tmdb_ativo ? 'bg-green-400' : 'bg-red-400'}"></span>
-                        <span class="text-sm font-medium">${s.tmdb_ativo ? 'Ativo' : 'Desativado'}</span>
-                    </div>
-                    <div class="text-[11px] text-gray-500">Enriquecimento de dados</div>
-                </div>
-            </div>
         `;
-        
         if (s.sync_ativo) {
             document.getElementById('sync-logs-area').classList.remove('hidden');
             document.getElementById('btn-wipe-all').disabled = true;
@@ -311,13 +287,71 @@ const Views = {
     },
 
     // ============================================================
-    // IPTV DIRETO (BUSCA E ADIÇÃO)
+    // PEDIDOS DE CONTEÚDO
+    // ============================================================
+    async pedidos(c) {
+        const data = await Api.pedidos().catch(() => ({ items: [] }));
+        const itens = data.items || [];
+
+        // Atualiza o badge do menu
+        const badge = document.getElementById('badge-pedidos');
+        if (itens.length > 0) { badge.textContent = itens.length; badge.classList.remove('hidden'); }
+        else badge.classList.add('hidden');
+
+        c.innerHTML = `
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-xl font-black">📥 Pedidos de Conteúdo</h2>
+                    <p class="text-xs text-gray-500 mt-1">Solicitações feitas pelos usuários no aplicativo.</p>
+                </div>
+                <button onclick="Router.render()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold flex items-center gap-2"><i class="fa-solid fa-rotate"></i> Atualizar</button>
+            </div>
+
+            ${itens.length === 0 ? `
+                <div class="stat-card rounded-xl p-12 text-center">
+                    <i class="fa-solid fa-inbox text-5xl text-gray-600 mb-4"></i>
+                    <h3 class="text-lg font-bold mb-2">Nenhum pedido pendente</h3>
+                    <p class="text-xs text-gray-500">Tudo em ordem! Os pedidos dos usuários aparecerão aqui.</p>
+                </div>
+            ` : `
+                <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${itens.map(p => `
+                        <div class="stat-card rounded-xl p-4 border-[#333]">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">${p.type === 'filme' ? 'FILME' : 'SÉRIE'}</span>
+                                <span class="text-[10px] text-gray-500">${new Date(p.createdAt).toLocaleDateString()}</span>
+                            </div>
+                            <div class="text-sm font-bold text-white mb-3">${esc(p.title)}</div>
+                            <div class="flex gap-2">
+                                <button onclick="Router.go('iptv'); setTimeout(()=>{ document.getElementById('iptv-tipo').value='${p.type}'; document.getElementById('iptv-busca').value='${esc(p.title)}'; Views._iptvBuscar(); }, 500)" class="flex-1 h-8 rounded bg-[#1a1a1a] hover:bg-[#222] border border-[#333] text-xs font-bold">
+                                    <i class="fa-solid fa-search mr-1"></i> Buscar no IPTV
+                                </button>
+                                <button onclick="Views._concluirPedido('${p.id}')" class="w-8 h-8 rounded bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white" title="Marcar como concluído"><i class="fa-solid fa-check"></i></button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `}
+        `;
+    },
+
+    async _concluirPedido(id) {
+        if (!confirm('Marcar este pedido como concluído?')) return;
+        try {
+            await Api.concluirPedido(id);
+            Toast.show('✅ Pedido concluído!', 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    // ============================================================
+    // IPTV DIRETO (BUSCA E ADIÇÃO EM LOTE)
     // ============================================================
     async buscaIptv(c) {
         c.innerHTML = `
             <div class="stat-card rounded-xl p-5 mb-6 border-blue-500/30 bg-blue-600/5">
                 <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Direta no Servidor IPTV</div>
-                <p class="text-xs text-gray-400 mb-4">Pesquise filmes ou séries e adicione ao seu catálogo. O sistema oculta o que você já adicionou.</p>
+                <p class="text-xs text-gray-400 mb-4">Pesquise e adicione. Você pode selecionar vários itens e adicionar todos de uma vez.</p>
                 
                 <div class="flex flex-wrap gap-2 items-end">
                     <div class="flex-1 min-w-[140px]">
@@ -329,17 +363,21 @@ const Views = {
                     </div>
                     <div class="flex-[2] min-w-[220px]">
                         <label class="text-[10px] text-gray-500 block mb-1">Buscar título</label>
-                        <input id="iptv-busca" class="input-dark" placeholder="Digite o nome do filme ou série...">
+                        <input id="iptv-busca" class="input-dark" placeholder="Digite o nome...">
                     </div>
                     <button onclick="Views._iptvBuscar()" id="btn-iptv-buscar" class="h-10 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold flex items-center gap-2">
-                        <i class="fa-solid fa-magnifying-glass"></i> Buscar no Provedor
+                        <i class="fa-solid fa-magnifying-glass"></i> Buscar
                     </button>
                 </div>
             </div>
 
+            <div id="iptv-lote-acoes" class="hidden mb-4 flex items-center justify-between bg-[#141414] border border-[#333] p-3 rounded-xl">
+                <div class="text-xs font-bold text-gray-300"><span id="lote-count">0</span> itens selecionados</div>
+                <button onclick="Views._iptvAdicionarLote()" class="h-8 px-4 rounded-lg bg-green-600 hover:bg-green-700 text-xs font-bold text-white"><i class="fa-solid fa-plus mr-1"></i> Adicionar Selecionados</button>
+            </div>
+
             <div id="iptv-resultados" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
         `;
-        
         document.getElementById('iptv-busca').onkeydown = (e) => { if (e.key === 'Enter') Views._iptvBuscar(); };
     },
 
@@ -350,20 +388,21 @@ const Views = {
 
         const btn = document.getElementById('btn-iptv-buscar');
         const box = document.getElementById('iptv-resultados');
+        document.getElementById('iptv-lote-acoes').classList.add('hidden');
         
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
-        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar de 10 a 60 segundos.</div></div>`;
+        btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
+        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div></div>`;
 
         try {
             const r = await Api.iptvBuscar(q, tipo);
             const items = r.items || [];
 
             if (items.length === 0) {
-                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-check-circle text-4xl text-green-500 mb-3"></i><div class="text-sm font-bold text-white">Tudo em ordem!</div><div class="text-xs text-gray-400">Nenhum resultado novo encontrado no provedor ou todos já estão no banco.</div></div>`;
+                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-check-circle text-4xl text-green-500 mb-3"></i><div class="text-sm font-bold text-white">Tudo em ordem!</div><div class="text-xs text-gray-400">Nenhum resultado novo ou todos já estão no banco.</div></div>`;
             } else {
                 box.innerHTML = items.map(it => `
                     <div class="stat-card rounded-xl p-3 flex items-center gap-3 border-[#333]">
+                        <input type="checkbox" class="custom-checkbox iptv-check" value='${JSON.stringify(it)}' onchange="Views._atualizarLote()">
                         <div class="w-16 h-24 rounded bg-gray-900 overflow-hidden flex-shrink-0">
                             ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-[10px] text-gray-600">sem capa</div>'}
                         </div>
@@ -372,7 +411,7 @@ const Views = {
                             <div class="text-xs font-bold text-white truncate">${esc(it.titulo)}</div>
                             <div class="text-[10px] text-gray-500 mb-2">${it.ano || '—'}</div>
                             <button onclick='Views._iptvAdicionar(${JSON.stringify(it)})' class="w-full h-8 rounded bg-green-600/20 text-green-400 hover:bg-green-600 hover:text-white text-xs font-bold transition">
-                                <i class="fa-solid fa-plus mr-1"></i> Adicionar ao Banco
+                                <i class="fa-solid fa-plus mr-1"></i> Adicionar
                             </button>
                         </div>
                     </div>
@@ -381,9 +420,29 @@ const Views = {
         } catch (e) {
             box.innerHTML = `<div class="col-span-full text-center py-8 text-red-400"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i><br><span class="font-bold">Erro:</span> ${esc(e.message)}</div>`;
         }
+        btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> Buscar';
+    },
 
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> Buscar no Provedor';
+    _atualizarLote() {
+        const checks = document.querySelectorAll('.iptv-check:checked');
+        const count = checks.length;
+        const box = document.getElementById('iptv-lote-acoes');
+        document.getElementById('lote-count').textContent = count;
+        if (count > 0) box.classList.remove('hidden'); else box.classList.add('hidden');
+    },
+
+    async _iptvAdicionarLote() {
+        const checks = document.querySelectorAll('.iptv-check:checked');
+        if (checks.length === 0) return;
+        
+        const items = Array.from(checks).map(c => JSON.parse(c.value));
+        if (!confirm(`Adicionar ${items.length} itens ao catálogo?`)) return;
+
+        try {
+            const r = await Api.iptvAdicionarLote(items);
+            Toast.show(`✅ ${r.adicionados} itens adicionados!`, 'success');
+            Views._iptvBuscar();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     async _iptvAdicionar(item) {
@@ -392,12 +451,13 @@ const Views = {
             const r = await Api.iptvAdicionar(item);
             if (!r.ok) throw new Error(r.msg || 'Erro');
             Toast.show('✅ Adicionado com sucesso!', 'success');
-            Views._iptvBuscar(); // Refaz a busca para tirar o item da lista
-        } catch (e) {
-            Toast.show('Erro: ' + e.message, 'error');
-        }
+            Views._iptvBuscar();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
+    // ============================================================
+    // NOTIFICAÇÕES PUSH
+    // ============================================================
     async notificacoes(c) {
         c.innerHTML = `
             <div class="grid md:grid-cols-2 gap-6">
@@ -415,52 +475,25 @@ const Views = {
                             <div id="notif-busca-area" class="hidden bg-[#0a0a0a] border border-[#262626] rounded-lg p-3">
                                 <label class="text-[10px] text-red-400 font-bold block mb-1">🔍 Puxar dados do catálogo (Opcional)</label>
                                 <div class="flex gap-2">
-                                    <select id="notif-busca-tipo" class="input-dark w-24 text-xs">
-                                        <option value="filme">Filme</option>
-                                        <option value="serie">Série</option>
-                                    </select>
+                                    <select id="notif-busca-tipo" class="input-dark w-24 text-xs"><option value="filme">Filme</option><option value="serie">Série</option></select>
                                     <input id="notif-busca-q" class="input-dark text-xs flex-1" placeholder="Nome do título...">
                                     <button type="button" onclick="Views._notifBuscar()" class="h-10 px-3 rounded-lg bg-red-600 text-xs font-bold"><i class="fa-solid fa-search"></i></button>
                                 </div>
                                 <div id="notif-busca-resultados" class="mt-2 space-y-1 max-h-32 overflow-y-auto"></div>
                             </div>
-                            <div>
-                                <label class="text-xs text-gray-400 block mb-1">Título *</label>
-                                <input id="notif-title" class="input-dark" required placeholder="Digite o título...">
-                            </div>
-                            <div>
-                                <label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label>
-                                <textarea id="notif-body" rows="3" class="input-dark" required placeholder="Digite a mensagem..."></textarea>
-                            </div>
+                            <div><label class="text-xs text-gray-400 block mb-1">Título *</label><input id="notif-title" class="input-dark" required placeholder="Digite o título..."></div>
+                            <div><label class="text-xs text-gray-400 block mb-1">Mensagem / Corpo *</label><textarea id="notif-body" rows="3" class="input-dark" required placeholder="Digite a mensagem..."></textarea></div>
                             <div id="notif-image-area" class="hidden">
                                 <label class="text-xs text-gray-400 block mb-1">URL da Imagem (Opcional)</label>
                                 <input id="notif-image" class="input-dark font-mono text-xs" placeholder="https://image.tmdb.org/...">
-                                <input type="hidden" id="notif-item-id" value="">
-                                <input type="hidden" id="notif-item-type" value="">
+                                <input type="hidden" id="notif-item-id" value=""><input type="hidden" id="notif-item-type" value="">
                             </div>
                             <div class="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
-                                    <select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')">
-                                        <option value="all">Todos os usuários</option>
-                                        <option value="specific">Usuário específico</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="text-xs text-gray-400 block mb-1">Tipo Base (App)</label>
-                                    <select id="notif-type" class="input-dark">
-                                        <option value="geral">Geral</option>
-                                        <option value="lancamento">Lançamento</option>
-                                    </select>
-                                </div>
+                                <div><label class="text-xs text-gray-400 block mb-1">Destinatário</label><select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')"><option value="all">Todos os usuários</option><option value="specific">Usuário específico</option></select></div>
+                                <div><label class="text-xs text-gray-400 block mb-1">Tipo Base</label><select id="notif-type" class="input-dark"><option value="geral">Geral</option><option value="lancamento">Lançamento</option></select></div>
                             </div>
-                            <div id="notif-uid-area" class="hidden">
-                                <label class="text-xs text-gray-400 block mb-1">UID do Usuário</label>
-                                <input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase">
-                            </div>
-                            <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2 mt-4">
-                                <i class="fa-solid fa-rocket"></i> Disparar Notificação
-                            </button>
+                            <div id="notif-uid-area" class="hidden"><label class="text-xs text-gray-400 block mb-1">UID do Usuário</label><input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase"></div>
+                            <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2 mt-4"><i class="fa-solid fa-rocket"></i> Disparar Notificação</button>
                         </form>
                     </div>
                 </div>
@@ -471,20 +504,14 @@ const Views = {
                             <div id="preview-img-box" class="w-10 h-10 rounded-lg bg-[#333] flex items-center justify-center flex-shrink-0 overflow-hidden hidden"><img id="preview-img" src="" class="w-full h-full object-cover"></div>
                             <div id="preview-icon-box" class="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center flex-shrink-0 text-white font-black italic text-xl">V</div>
                             <div class="flex-1 min-w-0">
-                                <div class="flex justify-between items-center mb-1">
-                                    <span class="text-[10px] text-gray-400 uppercase font-bold">Vênus Cine</span>
-                                    <span class="text-[10px] text-gray-500">agora</span>
-                                </div>
+                                <div class="flex justify-between items-center mb-1"><span class="text-[10px] text-gray-400 uppercase font-bold">Vênus Cine</span><span class="text-[10px] text-gray-500">agora</span></div>
                                 <div class="text-sm font-bold text-white truncate" id="preview-title">Título da Notificação</div>
                                 <div class="text-xs text-gray-300 line-clamp-2 mt-0.5" id="preview-body">A mensagem que você digitar vai aparecer aqui...</div>
                             </div>
                         </div>
                     </div>
                     <div class="stat-card rounded-xl p-5 flex flex-col h-[400px]">
-                        <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center">
-                            <span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico</span>
-                            <button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button>
-                        </div>
+                        <div class="text-xs font-semibold text-gray-400 uppercase mb-4 flex justify-between items-center"><span><i class="fa-solid fa-clock-rotate-left mr-1"></i> Histórico</span><button onclick="Router.render()" class="text-gray-500 hover:text-white"><i class="fa-solid fa-rotate"></i></button></div>
                         <div id="notif-historico" class="flex-1 overflow-y-auto space-y-3 pr-2"><div class="text-center text-gray-500 text-xs py-4">Carregando...</div></div>
                     </div>
                 </div>
@@ -507,14 +534,11 @@ const Views = {
         const title = document.getElementById('notif-title'); const body = document.getElementById('notif-body'); const img = document.getElementById('notif-image'); const type = document.getElementById('notif-type');
         title.value = ''; body.value = ''; img.value = ''; document.getElementById('notif-item-id').value = ''; document.getElementById('notif-item-type').value = ''; img.dispatchEvent(new Event('input'));
         if (tipo === 'lancamento') {
-            buscaArea.classList.remove('hidden'); imgArea.classList.remove('hidden');
-            title.placeholder = 'Ex: 🎬 Chegou: Vingadores'; body.placeholder = 'O sucesso Vingadores já está disponível.'; type.value = 'lancamento';
+            buscaArea.classList.remove('hidden'); imgArea.classList.remove('hidden'); title.placeholder = 'Ex: 🎬 Chegou: Vingadores'; body.placeholder = 'O sucesso Vingadores já está disponível.'; type.value = 'lancamento';
         } else if (tipo === 'plano') {
-            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden');
-            title.placeholder = 'Ex: 👑 Novo Plano Premium'; body.placeholder = 'Assine agora o plano Premium e assista em 4K!'; type.value = 'geral';
+            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden'); title.placeholder = 'Ex: 👑 Novo Plano Premium'; body.placeholder = 'Assine agora o plano Premium e assista em 4K!'; type.value = 'geral';
         } else {
-            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden');
-            title.placeholder = 'Ex: 📢 Manutenção Programada'; body.placeholder = 'Informamos que o sistema passará por uma breve manutenção.'; type.value = 'geral';
+            buscaArea.classList.add('hidden'); imgArea.classList.add('hidden'); title.placeholder = 'Ex: 📢 Manutenção Programada'; body.placeholder = 'Informamos que o sistema passará por uma breve manutenção.'; type.value = 'geral';
         }
         title.dispatchEvent(new Event('input')); body.dispatchEvent(new Event('input'));
     },
@@ -524,8 +548,7 @@ const Views = {
         box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs"><i class="fa-solid fa-circle-notch fa-spin"></i></div>';
         const rota = tipo === 'filme' ? 'filmes' : 'series';
         try {
-            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=5`);
-            const d = await r.json();
+            const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=5`); const d = await r.json();
             if (!d.items?.length) { box.innerHTML = '<div class="text-center text-gray-500 py-2 text-xs">Nada encontrado</div>'; return; }
             box.innerHTML = d.items.map(it => `
                 <div class="flex items-center gap-2 bg-[#1a1a1a] border border-[#333] rounded p-1.5 hover:border-red-600 cursor-pointer" onclick="Views._notifPreencher('${esc(it.titulo)}', '${esc(it.capa || '')}', '${it.id}', '${tipo}')">
@@ -575,6 +598,9 @@ const Views = {
         return `<div class="stat-card rounded-xl p-4"><div class="flex items-center justify-between mb-2"><div class="text-xs font-semibold text-gray-400 uppercase">${label}</div><i class="fa-solid ${icon} ${color}"></i></div><div class="text-2xl font-black">${value}</div></div>`;
     },
 
+    // ============================================================
+    // SLIDER
+    // ============================================================
     async slider(c) {
         const data = await fetch(API + '/admin/slider').then(r => r.json()).catch(() => ({ items: [] })); const itens = data.items || [];
         c.innerHTML = `
@@ -670,6 +696,9 @@ const Views = {
         try { const r = await fetch(API + '/admin/slider/' + id, { method: 'PUT', body: fd }); if (!r.ok) throw new Error('HTTP ' + r.status); Toast.show('✅ Slide atualizado', 'success'); Views.fecharModal(); Router.render(); } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
+    // ============================================================
+    // LISTAS (FILMES, SÉRIES, CANAIS)
+    // ============================================================
     async list(c, tipo) {
         const state = window._listState = window._listState || {}; state[tipo] = state[tipo] || { page: 1, size: 30, q: '' };
         const load = async () => {
@@ -690,12 +719,15 @@ const Views = {
                             <thead class="bg-[#0f0f0f] border-b border-[#262626] text-xs text-gray-400 uppercase"><tr><th class="text-left px-4 py-3 w-16"></th><th class="text-left px-4 py-3">Título</th><th class="text-left px-4 py-3 hidden sm:table-cell">Ano</th><th class="text-left px-4 py-3 hidden md:table-cell">Status</th><th class="text-center px-4 py-3 w-24">Ações</th></tr></thead>
                             <tbody>
                                 ${items.length === 0 ? `<tr><td colspan="5" class="text-center py-12 text-gray-500">Nenhum item</td></tr>` : items.map(it => `
-                                    <tr class="border-b border-[#1f1f1f] hover:bg-[#0f0f0f] cursor-pointer" onclick="Views.editar('${tipo}', ${it.id})">
+                                    <tr class="border-b border-[#1f1f1f] hover:bg-[#0f0f0f]">
                                         <td class="px-4 py-3"><div class="w-10 h-14 rounded bg-gray-900 overflow-hidden">${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover" onerror="this.style.display='none'">` : ''}</div></td>
                                         <td class="px-4 py-3"><div class="font-medium truncate max-w-[400px]">${esc(it.titulo)}</div><div class="text-[10px] text-gray-500">ID IPTV: ${esc(it.iptv_id || '—')}</div></td>
                                         <td class="px-4 py-3 hidden sm:table-cell text-gray-400">${esc(it.ano || '—')}</td>
                                         <td class="px-4 py-3 hidden md:table-cell">${it.editado ? `<span class="text-[10px] px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">EDITADO</span>` : `<span class="text-[10px] px-2 py-1 rounded bg-gray-500/20 text-gray-400">IPTV</span>`}</td>
-                                        <td class="px-4 py-3 text-center"><button onclick="event.stopPropagation();Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600 hover:bg-red-700" title="Editar"><i class="fa-solid fa-pen"></i></button></td>
+                                        <td class="px-4 py-3 text-center">
+                                            <button onclick="Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222] mr-1" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                                            <button onclick="Views.deletar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Excluir"><i class="fa-solid fa-trash"></i></button>
+                                        </td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -713,6 +745,15 @@ const Views = {
             document.getElementById(`search-${tipo}`).onkeydown = (e) => { if (e.key === 'Enter') Views._search(tipo); };
         };
         await load();
+    },
+
+    async deletar(tipo, id) {
+        if (!confirm('Tem certeza que deseja excluir este item do banco de dados e do app?')) return;
+        try {
+            await Api.deletarItem(tipo, id);
+            Toast.show('🗑️ Item excluído com sucesso!', 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro ao excluir: ' + e.message, 'error'); }
     },
 
     _search(tipo) { window._listState[tipo].q = document.getElementById(`search-${tipo}`).value; window._listState[tipo].page = 1; Router.render(); },
@@ -785,8 +826,7 @@ const Actions = {
     async wipeAll() {
         if (!confirm('⚠️ ATENÇÃO: Isso vai APAGAR todos os filmes, séries, canais, capas editadas e o banco de dados inteiro. O sistema vai ficar TOTALMENTE VAZIO. Tem certeza?')) return;
         const btn = document.getElementById('btn-wipe-all'); const logsArea = document.getElementById('sync-logs-area');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
+        btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
         logsArea.classList.remove('hidden'); logsArea.innerHTML = '<div class="text-red-500 font-bold">LIMPANDO O SISTEMA...</div>';
         try {
             const r = await Api.wipeAll();
@@ -808,6 +848,7 @@ const Actions = {
                     if (btnW) { btnW.disabled = false; btnW.innerHTML = '<i class="fa-solid fa-bomb"></i> Apagar Tudo'; }
                     Toast.show(`✅ Sistema limpo com sucesso!`, 'success', 8000);
                     if (Router.current === 'dashboard') Router.render();
+                    else Router.go('dashboard');
                 }
             } catch (e) { console.error(e); }
         }, 2000);
@@ -829,13 +870,26 @@ async function pollStatus() {
     }
 }
 
+async function pollPedidos() {
+    try {
+        const r = await Api.pedidos();
+        const badge = document.getElementById('badge-pedidos');
+        if (badge) {
+            if (r.items && r.items.length > 0) { badge.textContent = r.items.length; badge.classList.remove('hidden'); }
+            else badge.classList.add('hidden');
+        }
+    } catch {}
+}
+
 window.addEventListener('hashchange', () => Router.handle());
 window.addEventListener('DOMContentLoaded', () => {
     if (!window.location.hash) window.location.hash = '#dashboard';
     else Router.handle();
     conectarWS();
     pollStatus();
+    pollPedidos();
     setInterval(pollStatus, 15000);
+    setInterval(pollPedidos, 30000);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') Views.fecharModal(); });
 });
 </script>
