@@ -94,7 +94,7 @@
 
 <script>
 const API = '';
-window._pedidoAtual = null; // Variável global para guardar o pedido em andamento
+window._pedidoAtual = null;
 
 let WS = null;
 let WS_RECONNECT_TIMER = null;
@@ -192,7 +192,7 @@ const Api = {
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
     pedidos() { return this.get('/admin/notificacoes/pedidos'); },
-    concluirPedido(id) { return this.post(`/admin/notificacoes/pedidos/${id}/concluir`); },
+    concluirPedido(id, payload) { return this.post(`/admin/notificacoes/pedidos/${id}/concluir`, payload); },
     wipeAll() { return this.post('/admin/wipe-all'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); },
     iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
@@ -330,7 +330,7 @@ const Views = {
                                 <button onclick="window._pedidoAtual = { name: '${esc(p.solicitanteNome)}', uid: '${esc(p.solicitanteUid)}' }; Router.go('iptv'); setTimeout(()=>{ document.getElementById('iptv-tipo').value='${p.type}'; document.getElementById('iptv-busca').value='${esc(p.title)}'; Views._iptvBuscar(); }, 500)" class="flex-1 h-8 rounded bg-[#1a1a1a] hover:bg-[#222] border border-[#333] text-xs font-bold">
                                     <i class="fa-solid fa-search mr-1"></i> Buscar
                                 </button>
-                                <button onclick="Views._concluirPedido('${p.id}')" class="w-8 h-8 rounded bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white" title="Marcar como concluído"><i class="fa-solid fa-check"></i></button>
+                                <button onclick="Views._concluirPedido('${p.id}', '${esc(p.title)}', '${p.type}')" class="w-8 h-8 rounded bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white" title="Marcar como concluído"><i class="fa-solid fa-check"></i></button>
                             </div>
                         </div>
                     `).join('')}
@@ -339,13 +339,17 @@ const Views = {
         `;
     },
 
-    async _concluirPedido(id) {
-        if (!confirm('Marcar este pedido como concluído? O usuário receberá uma notificação de agradecimento.')) return;
+    async _concluirPedido(id, titulo, tipo) {
+        if (!confirm(`Marcar o pedido de "${titulo}" como concluído?\n\nO usuário receberá uma notificação de agradecimento.`)) return;
+        
         try {
-            await Api.concluirPedido(id);
+            const payload = { titulo: titulo, tipo: tipo };
+            await Api.concluirPedido(id, payload);
             Toast.show('✅ Pedido concluído e usuário notificado!', 'success');
             Router.render();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+        } catch (e) { 
+            Toast.show('Erro: ' + e.message, 'error'); 
+        }
     },
 
     // ============================================================
@@ -527,7 +531,6 @@ const Views = {
         if (!confirm(`Adicionar ${items.length} itens ao catálogo?`)) return;
 
         try {
-            // Se houver um pedido ativo, injeta os dados no primeiro item do lote (ou em todos)
             if (window._pedidoAtual) {
                 items.forEach(it => {
                     it.added_by_name = window._pedidoAtual.name;
@@ -537,7 +540,7 @@ const Views = {
 
             const r = await Api.iptvAdicionarLote(items);
             Toast.show(`✅ ${r.adicionados} itens adicionados!`, 'success');
-            window._pedidoAtual = null; // Limpa após adicionar
+            window._pedidoAtual = null;
             Views._iptvBuscar();
         } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
