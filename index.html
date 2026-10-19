@@ -749,7 +749,7 @@ const Views = {
             const r = await fetch(API + `/admin/${rota}?q=${encodeURIComponent(q)}&page=1&size=20`); const d = await r.json();
             if (!d.items?.length) { box.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Nada encontrado</div>'; return; }
             box.innerHTML = d.items.map(it => `
-                <div class="flex items-center gap-3 bg-[#0a0a0a] border border-[#262626] rounded-lg p-2 mb-1 hover:border-red-600 cursor-pointer" onclick="Views._sliderAdicionar('${tipo}', ${it.id})">
+                <div class="flex items-center gap-3 bg-[#0a0a0a] border border-[#262626] rounded-lg p-2 mb-1 hover:border-red-600 cursor-pointer" onclick="Views._sliderAdicionar('${tipo}', '${it.iptv_id || it.id}')">
                     <div class="w-10 h-14 rounded bg-gray-900 overflow-hidden flex-shrink-0">${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : ''}</div>
                     <div class="flex-1 min-w-0"><div class="text-xs font-bold truncate">${esc(it.titulo)}</div><div class="text-[10px] text-gray-500">${esc(it.ano || '—')}</div></div>
                     <button class="h-8 px-3 rounded bg-red-600 text-xs font-bold"><i class="fa-solid fa-plus"></i> Adicionar</button>
@@ -830,8 +830,8 @@ const Views = {
                                         <td class="px-4 py-3 hidden sm:table-cell text-gray-400">${esc(it.ano || '—')}</td>
                                         <td class="px-4 py-3 hidden md:table-cell">${it.editado ? `<span class="text-[10px] px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">EDITADO</span>` : `<span class="text-[10px] px-2 py-1 rounded bg-gray-500/20 text-gray-400">IPTV</span>`}</td>
                                         <td class="px-4 py-3 text-center">
-                                            <button onclick="Views.editar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222] mr-1" title="Editar"><i class="fa-solid fa-pen"></i></button>
-                                            <button onclick="Views.deletar('${tipo}', ${it.id})" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Excluir"><i class="fa-solid fa-trash"></i></button>
+                                            <button onclick="Views.editar('${tipo}', '${it.iptv_id || it.id}')" class="w-9 h-9 rounded-lg bg-[#1a1a1a] hover:bg-[#222] mr-1" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                                            <button onclick="Views.deletar('${tipo}', '${it.iptv_id || it.id}')" class="w-9 h-9 rounded-lg bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Excluir"><i class="fa-solid fa-trash"></i></button>
                                         </td>
                                     </tr>
                                 `).join('')}
@@ -884,7 +884,7 @@ const Views = {
                     <div><div class="text-xs text-gray-500 uppercase">Editando</div><div class="font-bold">${tituloTipo} · ${esc(it.titulo)}</div></div>
                     <button onclick="Views.fecharModal()" class="w-9 h-9 rounded-lg hover:bg-[#222]"><i class="fa-solid fa-xmark"></i></button>
                 </div>
-                <form onsubmit="Views.salvar(event, '${tipo}', ${it.id})" class="p-5 space-y-4">
+                <form onsubmit="Views.salvar(event, '${tipo}', '${it.iptv_id || it.id}')" class="p-5 space-y-4">
                     <div><label class="text-xs text-gray-400 block mb-1">Título</label><input name="titulo" value="${esc(it.titulo || '')}" class="input-dark" required></div>
                     ${tipo !== 'canal' ? `<div class="grid grid-cols-2 gap-3"><div><label class="text-xs text-gray-400 block mb-1">Ano</label><input name="ano" type="number" value="${it.ano || ''}" class="input-dark"></div><div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" value="${esc(it.categoria || '')}" class="input-dark"></div></div>` : `<div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" value="${esc(it.categoria || '')}" class="input-dark"></div>`}
                     ${tipo === 'filme' || tipo === 'canal' ? `<div><label class="text-xs text-gray-400 block mb-1">URL do stream</label><input name="url" value="${esc(it.url || '')}" class="input-dark font-mono text-xs"></div>` : ''}
