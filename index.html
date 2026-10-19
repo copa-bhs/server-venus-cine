@@ -473,11 +473,23 @@ const Views = {
             const items = r.items || [];
 
             if (items.length === 0) {
-                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-check-circle text-4xl text-green-500 mb-3"></i><div class="text-sm font-bold text-white">Tudo em ordem!</div><div class="text-xs text-gray-400">Nenhum resultado novo ou todos já estão no banco.</div></div>`;
+                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-triangle-exclamation text-4xl text-yellow-500 mb-3"></i><div class="text-sm font-bold text-white">Nenhum resultado encontrado no provedor.</div><div class="text-xs text-gray-400">O nome pode estar diferente. Tente buscar apenas por "100".</div></div>`;
             } else {
-                box.innerHTML = items.map(it => `
-                    <div class="stat-card rounded-xl p-3 flex items-center gap-3 border-[#333]">
-                        <input type="checkbox" class="custom-checkbox iptv-check" value='${JSON.stringify(it)}' onchange="Views._atualizarLote()">
+                box.innerHTML = items.map(it => {
+                    const badge = it.ja_existe 
+                        ? `<div class="absolute inset-0 bg-black/60 flex items-center justify-center rounded-xl z-10"><span class="bg-green-600 text-white text-xs font-bold px-3 py-1 rounded-full"><i class="fa-solid fa-check mr-1"></i> Já está no banco</span></div>` 
+                        : '';
+                        
+                    const btnAdd = it.ja_existe
+                        ? `<button disabled class="w-full h-8 rounded bg-[#222] text-gray-500 text-xs font-bold cursor-not-allowed">Adicionado</button>`
+                        : `<button onclick='Views._iptvAdicionar(${JSON.stringify(it)})' class="w-full h-8 rounded bg-green-600/20 text-green-400 hover:bg-green-600 hover:text-white text-xs font-bold transition"><i class="fa-solid fa-plus mr-1"></i> Adicionar</button>`;
+
+                    const check = it.ja_existe ? `disabled` : `onchange="Views._atualizarLote()"`;
+
+                    return `
+                    <div class="stat-card rounded-xl p-3 flex items-center gap-3 border-[#333] relative overflow-hidden">
+                        ${badge}
+                        <input type="checkbox" class="custom-checkbox iptv-check" value='${JSON.stringify(it)}' ${check}>
                         <div class="w-16 h-24 rounded bg-gray-900 overflow-hidden flex-shrink-0">
                             ${it.capa ? `<img src="${esc(it.capa)}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-[10px] text-gray-600">sem capa</div>'}
                         </div>
@@ -485,12 +497,10 @@ const Views = {
                             <div class="text-[10px] text-blue-400 font-bold mb-1">ID: ${it.id}</div>
                             <div class="text-xs font-bold text-white truncate">${esc(it.titulo)}</div>
                             <div class="text-[10px] text-gray-500 mb-2">${it.ano || '—'}</div>
-                            <button onclick='Views._iptvAdicionar(${JSON.stringify(it)})' class="w-full h-8 rounded bg-green-600/20 text-green-400 hover:bg-green-600 hover:text-white text-xs font-bold transition">
-                                <i class="fa-solid fa-plus mr-1"></i> Adicionar
-                            </button>
+                            ${btnAdd}
                         </div>
                     </div>
-                `).join('');
+                `}).join('');
             }
         } catch (e) {
             box.innerHTML = `<div class="col-span-full text-center py-8 text-red-400"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i><br><span class="font-bold">Erro:</span> ${esc(e.message)}</div>`;

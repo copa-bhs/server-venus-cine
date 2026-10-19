@@ -43,7 +43,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="11.0.0")
+app = FastAPI(title="IPTV Organizer Pro", version="11.1.0")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=False,
@@ -102,15 +102,35 @@ def paginate(items, page, size):
     total = len(items); tp = (total + size - 1) // size if size else 0; st = (page - 1) * size
     return {"page": page, "page_size": size, "total_items": total, "total_pages": tp, "has_next": page < tp, "has_prev": page > 1, "items": items[st:st + size]}
 
-def _card(item, tipo=None):
-    return {"id": item.get("id"), "tipo": tipo or item.get("tipo") or "filme", "titulo": item.get("titulo") or "", "capa": item.get("capa"), "ano": item.get("ano")}
-
 def _normalizar_busca(texto: str) -> str:
     if not texto: return ""
     t = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii').lower()
     t = re.sub(r'[^a-z0-9\s]', ' ', t)
     t = re.sub(r'\b(the|os|as|o|a|um|uma|de|do|da)\b', ' ', t)
     return " ".join(t.split())
+
+# ⚡ NOVA FUNÇÃO: Mapeia para o formato do App (compatibilidade com cinevs)
+def _card_app(item, tipo=None):
+    t = tipo or item.get("tipo") or "filme"
+    tipo_app = "movie" if t == "filme" else ("series" if t == "serie" else "channel")
+    
+    titulo = item.get("titulo") or ""
+    ano = item.get("ano")
+    slug_base = _slugify(titulo, ano)
+    
+    return {
+        "id": str(item.get("id")),
+        "title": titulo,
+        "poster": item.get("capa"),
+        "type": tipo_app,
+        "year": ano,
+        "slug": slug_base,
+        # Mantém os campos antigos caso o app já esteja usando
+        "titulo": titulo,
+        "capa": item.get("capa"),
+        "tipo": t,
+        "ano": ano
+    }
 
 @app.on_event("startup")
 async def startup():
@@ -313,31 +333,41 @@ async def home(force: bool = False):
 def listar_filmes(page: int = Query(1, ge=1), size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE), categoria: str | None = None):
     filmes = _FILMES
     if categoria: filmes = [f for f in filmes if f["categoria"].lower() == categoria.lower()]
-    resp = paginate(filmes, page, size); resp["items"] = [_card(it, "filme") for it in resp["items"]]; return resp
+    resp = paginate(filmes, page, size); 
+    resp["items"] = [_card_app(it, "filme") for it in resp["items"]]; 
+    return resp
 
 @app.get("/series")
 def listar_series(page: int = Query(1, ge=1), size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE), categoria: str | None = None):
     series = _SERIES
     if categoria: series = [s for s in series if s["categoria"].lower() == categoria.lower()]
-    resp = paginate(series, page, size); resp["items"] = [_card(it, "serie") for it in resp["items"]]; return resp
+    resp = paginate(series, page, size); 
+    resp["items"] = [_card_app(it, "serie") for it in resp["items"]]; 
+    return resp
 
 @app.get("/canais")
 def listar_canais(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=MAX_PAGE_SIZE), categoria: str | None = None):
     canais = _CANAIS
     if categoria: canais = [c for c in canais if c["categoria"].lower() == categoria.lower()]
-    resp = paginate(canais, page, size); resp["items"] = [_card(it, "canal") for it in resp["items"]]; return resp
+    resp = paginate(canais, page, size); 
+    resp["items"] = [_card_app(it, "canal") for it in resp["items"]]; 
+    return resp
 
 @app.get("/buscar")
 def buscar(q: str = Query(..., min_length=1), tipo: str | None = None, page: int = Query(1, ge=1), size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)):
+    print(f"\n[Busca App] Recebido: '{q}' | Tipo: {tipo}")
     q_raw = q.lower().strip(); q_norm = _normalizar_busca(q); resultados = []
     def match(item):
         tit = item.get("titulo") or ""
         if q_raw in tit.lower(): return True
         if q_norm and q_norm in _normalizar_busca(tit): return True
         return False
-    if tipo in (None, "filme"): resultados += [_card(f, "filme") for f in _FILMES if match(f)]
-    if tipo in (None, "serie"): resultados += [_card(s, "serie") for s in _SERIES if match(s)]
-    if tipo in (None, "canal"): resultados += [_card(c, "canal") for c in _CANAIS if match(c)]
+    
+    if tipo in (None, "filme", "movie"): resultados += [_card_app(f, "filme") for f in _FILMES if match(f)]
+    if tipo in (None, "serie", "series"): resultados += [_card_app(s, "serie") for s in _SERIES if match(s)]
+    if tipo in (None, "canal", "channel"): resultados += [_card_app(c, "canal") for c in _CANAIS if match(c)]
+    
+    print(f"[Busca App] Encontrados: {len(resultados)} resultados.")
     return paginate(resultados, page, size)
 
 @app.get("/categorias")
@@ -386,6 +416,7 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
         
     existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id} if tipo == "filme" else {s.iptv_id for s in db.query(SerieDB).all() if s.iptv_id}
     resultados = []
+    
     for item in data:
         if not isinstance(item, dict): continue
         if tipo == "filme":
@@ -396,8 +427,17 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
             ano = _extract_year(item.get("releaseDate")) or _extract_year(nome); stream_url = ""
             
         if not sid: continue
-        if q_norm in _normalizar_busca(nome) and sid not in existentes:
-            resultados.append({"id": sid, "titulo": _clean_name(nome) or nome, "capa": capa, "ano": ano, "url": stream_url, "tipo": tipo})
+        
+        if q_norm in _normalizar_busca(nome):
+            resultados.append({
+                "id": sid, 
+                "titulo": _clean_name(nome) or nome, 
+                "capa": capa, 
+                "ano": ano, 
+                "url": stream_url, 
+                "tipo": tipo,
+                "ja_existe": sid in existentes # ⚡ AVISA SE JÁ ESTÁ NO BANCO
+            })
             
     return {"items": resultados[:200]}
 
