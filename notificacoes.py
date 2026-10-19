@@ -16,7 +16,7 @@ try:
     db_firestore = firestore.client()
     print("[Firebase] Admin SDK inicializado com sucesso.")
 except Exception as e:
-    print(f"[Firebase] ERRO ao inicializar: {e}. Verifique firebase-key.json.")
+    print(f"[Firebase] ERRO ao inicializar: {e}.")
     db_firestore = None
 
 class NotificacaoPayload(BaseModel):
@@ -39,21 +39,20 @@ async def enviar_notificacao(payload: NotificacaoPayload):
             doc_data['itemId'] = str(payload.itemId)
             doc_data['itemType'] = payload.itemType or 'filme'
         doc_ref.set(doc_data)
-    except Exception as e: raise HTTPException(500, f"Erro ao salvar no Firestore: {e}")
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
     tokens = []
     try:
         if payload.target == 'all':
-            usuarios = db_firestore.collection('usuarios').stream()
-            for user in usuarios:
+            for user in db_firestore.collection('usuarios').stream():
                 for t in user.reference.collection('fcm_tokens').stream(): tokens.append(t.id)
         elif payload.target == 'specific' and payload.uid:
             for t in db_firestore.collection('usuarios').document(payload.uid).collection('fcm_tokens').stream(): tokens.append(t.id)
-    except Exception as e: print(f"Erro tokens: {e}")
+    except: pass
 
-    if not tokens: return {"ok": True, "msg": "Salva no app, mas ninguém possui token FCM.", "enviados": 0}
+    if not tokens: return {"ok": True, "msg": "Ninguém possui token.", "enviados": 0}
 
-    fcm_data = {'type': payload.type, 'imageUrl': payload.imageUrl or '', 'click_action': 'FLUTTER_NOTIFICATION_CLICK'}
+    fcm_data = {'type': payload.type, 'imageUrl': payload.imageUrl or ''}
     if payload.type == 'lancamento' and payload.itemId:
         fcm_data['itemId'] = str(payload.itemId)
         fcm_data['itemType'] = payload.itemType or 'filme'
@@ -61,11 +60,9 @@ async def enviar_notificacao(payload: NotificacaoPayload):
     mensagem = messaging.MulticastMessage(
         notification=messaging.Notification(title=payload.title, body=payload.body, image=payload.imageUrl if payload.imageUrl else None),
         data=fcm_data, tokens=tokens,
-        android=messaging.AndroidConfig(priority='high', notification=messaging.AndroidNotification(image=payload.imageUrl if payload.imageUrl else None)),
-        apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(mutable_content=True)))
+        android=messaging.AndroidConfig(priority='high'),
     )
     response = messaging.send_each_for_multicast(mensagem)
-
     return {"ok": True, "sucesso": response.success_count, "falha": response.failure_count, "msg": f"Enviado para {response.success_count} dispositivos."}
 
 @router.get("/historico")
@@ -80,56 +77,65 @@ async def listar_historico():
             d['id'] = doc.id
             historico.append(d)
         return {"ok": True, "items": historico}
-    except Exception as e: 
-        print(f"ERRO HISTORICO: {e}")
-        raise HTTPException(500, f"Erro: {e}")
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
 # ==========================================================
-# PEDIDOS DE CONTEÚDO (APP -> PAINEL) - CORRIGIDO
+# PEDIDOS DE CONTEÚDO
 # ==========================================================
 @router.get("/pedidos")
 async def listar_pedidos():
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # ⚡ CORREÇÃO: Busca na coleção 'pedidos_conteudo' (nome que está no app)
         docs = db_firestore.collection('pedidos_conteudo').stream()
         out = []
         for doc in docs:
             d = doc.to_dict()
-            
-            status = d.get('status', 'pendente')
-            if status != 'pendente':
-                continue
-                
-            created_at = d.get('createdAt')
-            if created_at:
-                try: d['createdAt'] = created_at.isoformat()
-                except: d['createdAt'] = str(created_at)
-            else:
-                d['createdAt'] = None
-                
-            # ⚡ CORREÇÃO: Mapeia os campos que o app envia (titulo/tipo) para o painel ler (title/type)
+            if d.get('status', 'pendente') != 'pendente': continue
+            d['id'] = doc.id
+            # Normaliza os dados para o painel
             out.append({
                 "id": doc.id,
                 "title": d.get('titulo', 'Desconhecido'),
                 "type": d.get('tipo', 'filme'),
-                "status": status,
-                "createdAt": d['createdAt'],
-                "capa": d.get('capa', ''),
-                "id_iptv": d.get('id_iptv', '')
+                "status": 'pendente',
+                "createdAt": d.get('createdAt').isoformat() if d.get('createdAt') else None,
+                "solicitanteNome": d.get('solicitanteNome', 'Anônimo'),
+                "solicitanteUid": d.get('solicitanteUid', '')
             })
-            
-        print(f"[Pedidos] Encontrados {len(out)} pedidos pendentes.")
         return {"ok": True, "items": out}
-    except Exception as e:
-        print(f"ERRO PEDIDOS: {e}")
-        raise HTTPException(500, f"Erro: {e}")
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
 @router.post("/pedidos/{pedido_id}/concluir")
 async def concluir_pedido(pedido_id: str):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # ⚡ CORREÇÃO: Atualiza na coleção correta
-        db_firestore.collection('pedidos_conteudo').document(pedido_id).update({'status': 'concluido'})
+        doc_ref = db_firestore.collection('pedidos_conteudo').document(pedido_id)
+        doc = doc_ref.get()
+        
+        if doc.exists:
+            d = doc.to_dict()
+            uid = d.get('solicitanteUid')
+            nome = d.get('solicitanteNome', 'Usuário')
+            titulo = d.get('titulo', 'seu conteúdo')
+            tipo = d.get('tipo', 'filme')
+            
+            # 1. Atualiza o status no Firestore
+            doc_ref.update({'status': 'concluido'})
+            
+            # 2. Envia a notificação automática de agradecimento
+            if uid:
+                tokens = [t.id for t in db_firestore.collection('usuarios').document(uid).collection('fcm_tokens').stream()]
+                if tokens:
+                    tipo_str = "Série" if tipo == "serie" else ("Canal" if tipo == "canal" else "Filme")
+                    msg = messaging.MulticastMessage(
+                        notification=messaging.Notification(
+                            title="Pedido Aprovado! 🎉",
+                            body=f"Obrigado {nome}! O {tipo_str} '{titulo}' que você pediu foi adicionado ao catálogo e marcado com o seu nome no perfil."
+                        ),
+                        tokens=tokens,
+                        android=messaging.AndroidConfig(priority='high')
+                    )
+                    messaging.send_each_for_multicast(msg)
+                    
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")

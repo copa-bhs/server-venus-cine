@@ -94,6 +94,7 @@
 
 <script>
 const API = '';
+window._pedidoAtual = null; // Variável global para guardar o pedido em andamento
 
 let WS = null;
 let WS_RECONNECT_TIMER = null;
@@ -322,10 +323,12 @@ const Views = {
                                 <span class="text-[10px] px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">${p.type === 'filme' ? 'FILME' : 'SÉRIE'}</span>
                                 <span class="text-[10px] text-gray-500">${new Date(p.createdAt).toLocaleDateString()}</span>
                             </div>
-                            <div class="text-sm font-bold text-white mb-3">${esc(p.title)}</div>
+                            <div class="text-sm font-bold text-white mb-1">${esc(p.title)}</div>
+                            <div class="text-[10px] text-gray-400 mb-3">Solicitado por: <b class="text-gray-300">${esc(p.solicitanteNome)}</b></div>
+                            
                             <div class="flex gap-2">
-                                <button onclick="Router.go('iptv'); setTimeout(()=>{ document.getElementById('iptv-tipo').value='${p.type}'; document.getElementById('iptv-busca').value='${esc(p.title)}'; Views._iptvBuscar(); }, 500)" class="flex-1 h-8 rounded bg-[#1a1a1a] hover:bg-[#222] border border-[#333] text-xs font-bold">
-                                    <i class="fa-solid fa-search mr-1"></i> Buscar no IPTV
+                                <button onclick="window._pedidoAtual = { name: '${esc(p.solicitanteNome)}', uid: '${esc(p.solicitanteUid)}' }; Router.go('iptv'); setTimeout(()=>{ document.getElementById('iptv-tipo').value='${p.type}'; document.getElementById('iptv-busca').value='${esc(p.title)}'; Views._iptvBuscar(); }, 500)" class="flex-1 h-8 rounded bg-[#1a1a1a] hover:bg-[#222] border border-[#333] text-xs font-bold">
+                                    <i class="fa-solid fa-search mr-1"></i> Buscar
                                 </button>
                                 <button onclick="Views._concluirPedido('${p.id}')" class="w-8 h-8 rounded bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white" title="Marcar como concluído"><i class="fa-solid fa-check"></i></button>
                             </div>
@@ -337,10 +340,10 @@ const Views = {
     },
 
     async _concluirPedido(id) {
-        if (!confirm('Marcar este pedido como concluído?')) return;
+        if (!confirm('Marcar este pedido como concluído? O usuário receberá uma notificação de agradecimento.')) return;
         try {
             await Api.concluirPedido(id);
-            Toast.show('✅ Pedido concluído!', 'success');
+            Toast.show('✅ Pedido concluído e usuário notificado!', 'success');
             Router.render();
         } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
@@ -524,8 +527,17 @@ const Views = {
         if (!confirm(`Adicionar ${items.length} itens ao catálogo?`)) return;
 
         try {
+            // Se houver um pedido ativo, injeta os dados no primeiro item do lote (ou em todos)
+            if (window._pedidoAtual) {
+                items.forEach(it => {
+                    it.added_by_name = window._pedidoAtual.name;
+                    it.added_by_uid = window._pedidoAtual.uid;
+                });
+            }
+
             const r = await Api.iptvAdicionarLote(items);
             Toast.show(`✅ ${r.adicionados} itens adicionados!`, 'success');
+            window._pedidoAtual = null; // Limpa após adicionar
             Views._iptvBuscar();
         } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
@@ -533,9 +545,14 @@ const Views = {
     async _iptvAdicionar(item) {
         if (!confirm(`Adicionar "${item.titulo}" ao catálogo?`)) return;
         try {
+            if (window._pedidoAtual) {
+                item.added_by_name = window._pedidoAtual.name;
+                item.added_by_uid = window._pedidoAtual.uid;
+            }
             const r = await Api.iptvAdicionar(item);
             if (!r.ok) throw new Error(r.msg || 'Erro');
             Toast.show('✅ Adicionado com sucesso!', 'success');
+            window._pedidoAtual = null;
             Views._iptvBuscar();
         } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
