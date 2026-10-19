@@ -38,7 +38,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="11.6.0")
+app = FastAPI(title="IPTV Organizer Pro", version="11.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(notificacoes_router)
 
@@ -307,7 +307,7 @@ async def editar_canal(item_id: str, titulo: Optional[str] = Form(None), categor
     return {"ok": True, "id": obj.id, "titulo": obj.titulo}
 
 # ==========================================================
-# IMPORTAR / ADICIONAR / WIPE
+# IPTV BUSCA MANUAL E IMPORTAÇÃO EM MASSA
 # ==========================================================
 class IPTVAddPayload(BaseModel):
     id: str
@@ -378,6 +378,118 @@ async def admin_iptv_adicionar_lote(payload: IPTVLotePayload, db: Session = Depe
     await manager.broadcast("catalogo_sincronizado", _stats())
     return {"ok": True, "adicionados": adicionados}
 
+# ⚡ ROTA DE IMPORTAÇÃO EM MASSA RECOLOCADA AQUI
+async def _importar_lote_bg(tipo: str, quantidade: int):
+    global _IMPORT_ATIVO, _IMPORT_LOGS, _FILMES, _SERIES, _CANAIS
+    _IMPORT_ATIVO = True
+    _IMPORT_LOGS = [f"[•] Iniciando importação de até {quantidade if quantidade > 0 else 'TODOS os'} {tipo}(s)..."]
+    db = SessionLocal()
+    try:
+        action = "get_vod_streams" if tipo == "filme" else ("get_series" if tipo == "serie" else "get_live_streams")
+        cat_action = "get_vod_categories" if tipo == "filme" else ("get_series_categories" if tipo == "serie" else "get_live_categories")
+        
+        url = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}"
+        cat_url = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={cat_action}"
+        
+        _IMPORT_LOGS.append(f"[•] Baixando lista do provedor...")
+        async with httpx.AsyncClient(timeout=120) as client:
+            r_data, r_cat = await asyncio.gather(client.get(url), client.get(cat_url))
+            data = r_data.json()
+            cats = r_cat.json()
+            
+        if not isinstance(data, list):
+            _IMPORT_LOGS.append("[!] Erro: Provedor retornou formato inválido.")
+            return
+
+        cat_map = {str(c.get("category_id")): _clean_category(c.get("category_name") or "Geral") for c in cats if isinstance(c, dict)} if isinstance(cats, list) else {}
+
+        _IMPORT_LOGS.append(f"[✓] Lista baixada. Total no provedor: {len(data)}")
+
+        if tipo == "filme":
+            existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id}
+        elif tipo == "serie":
+            existentes = {s.iptv_id for s in db.query(SerieDB).all() if s.iptv_id}
+        else:
+            existentes = {c.iptv_id for c in db.query(CanalDB).all() if c.iptv_id}
+
+        adicionados = 0
+        _IMPORT_LOGS.append(f"[•] Filtrando e inserindo...")
+        
+        for item in data:
+            if not isinstance(item, dict): continue
+            if quantidade > 0 and adicionados >= quantidade:
+                break
+                
+            if tipo == "filme":
+                sid = str(item.get("stream_id") or "")
+                if not sid or sid in existentes: continue
+                nome = _clean_name(item.get("name") or "")
+                capa = item.get("stream_icon") or item.get("cover")
+                ano = _extract_year(item.get("name"))
+                cat = cat_map.get(str(item.get("category_id") or ""), "Geral")
+                ext = item.get("container_extension") or "mp4"
+                stream_url = f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.{ext}"
+                
+                db.add(FilmeDB(iptv_id=sid, titulo=nome, capa=capa, ano=ano, categoria=cat, url=stream_url))
+                _FILMES.append({"id": sid, "tipo": "filme", "titulo": nome, "capa": capa, "ano": ano, "categoria": cat, "url": stream_url})
+                
+            elif tipo == "serie":
+                sid = str(item.get("series_id") or "")
+                if not sid or sid in existentes: continue
+                nome = _clean_name(item.get("name") or "")
+                capa = item.get("cover") or item.get("stream_icon")
+                ano = _extract_year(item.get("releaseDate")) or _extract_year(item.get("name"))
+                cat = cat_map.get(str(item.get("category_id") or ""), "Geral")
+                
+                db.add(SerieDB(iptv_id=sid, titulo=nome, capa=capa, ano=ano, categoria=cat))
+                _SERIES.append({"id": sid, "tipo": "serie", "titulo": nome, "capa": capa, "ano": ano, "categoria": cat})
+                
+            else: # canal
+                sid = str(item.get("stream_id") or "")
+                if not sid or sid in existentes: continue
+                nome = _clean_name(item.get("name") or "")
+                capa = item.get("stream_icon")
+                cat = cat_map.get(str(item.get("category_id") or ""), "Geral")
+                stream_url = f"{IPTV_HOST}/live/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.ts"
+                
+                db.add(CanalDB(iptv_id=sid, titulo=nome, capa=capa, categoria=cat, url=stream_url))
+                _CANAIS.append({"id": sid, "tipo": "canal", "titulo": nome, "capa": capa, "categoria": cat, "url": stream_url})
+                
+            adicionados += 1
+            existentes.add(sid)
+            
+            if adicionados % 100 == 0:
+                _IMPORT_LOGS.append(f"[•] {adicionados} adicionados...")
+                db.commit()
+
+        db.commit()
+        _rebuild_slugs()
+        _save_all()
+        
+        _IMPORT_LOGS.append(f"[✓] Importação concluída! {adicionados} novos itens adicionados.")
+        await manager.broadcast("catalogo_sincronizado", _stats())
+        
+    except Exception as e:
+        _IMPORT_LOGS.append(f"[!] Erro: {e}")
+        print(f"[!] Erro importação lote: {e}")
+    finally:
+        db.close()
+        _IMPORT_ATIVO = False
+
+@app.post("/admin/iptv/importar-lote-bg")
+async def importar_lote_bg(tipo: str = Query(...), quantidade: int = Query(...)):
+    global _IMPORT_ATIVO
+    if _IMPORT_ATIVO: return {"ok": False, "msg": "Já existe uma importação em andamento."}
+    asyncio.create_task(_importar_lote_bg(tipo, quantidade))
+    return {"ok": True, "msg": "Importação iniciada."}
+
+@app.get("/admin/iptv/importar-lote-bg/status")
+async def importar_lote_bg_status():
+    return {"ativo": _IMPORT_ATIVO, "logs": _IMPORT_LOGS, "stats": _stats()}
+
+# ==========================================================
+# LIMPEZA TOTAL
+# ==========================================================
 async def _wipe_all_bg():
     global _SYNC_ATIVO, _FILMES, _SERIES, _CANAIS
     _SYNC_ATIVO = True
@@ -402,7 +514,7 @@ async def force_sync_status():
     return {"ativo": _SYNC_ATIVO, "stats": _stats(), "logs": _SYNC_LOGS}
 
 # ==========================================================
-# SLIDER (CORRIGIDO AQUI!)
+# SLIDER
 # ==========================================================
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
@@ -420,7 +532,6 @@ def admin_slider_listar(db: Session = Depends(get_db)):
 async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(...), db: Session = Depends(get_db)):
     global _HOME_CACHE_TS, _FILMES, _SERIES
     
-    # ⚡ CORREÇÃO: Busca no banco. Se não achar, busca na memória e insere no banco.
     item_db = None
     if ref_tipo == "filme":
         item_db = db.query(FilmeDB).filter(FilmeDB.iptv_id == ref_id).first()
@@ -437,8 +548,7 @@ async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(.
                 item_db = SerieDB(iptv_id=ref_id, titulo=mem_item.get("titulo"), capa=mem_item.get("capa"), ano=mem_item.get("ano"), categoria=mem_item.get("categoria"))
                 db.add(item_db); db.commit(); db.refresh(item_db)
 
-    if not item_db: 
-        raise HTTPException(404, "Item não encontrado no banco nem na memória.")
+    if not item_db: raise HTTPException(404, "Item não encontrado no banco nem na memória.")
 
     ultimo = db.query(SlideDB).order_by(SlideDB.ordem.desc()).first(); proxima = (ultimo.ordem + 1) if ultimo else 0
     novo = SlideDB(ordem=proxima, ref_tipo=ref_tipo, ref_id=item_db.id, ativo=True)
