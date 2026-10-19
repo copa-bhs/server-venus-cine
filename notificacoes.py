@@ -80,24 +80,43 @@ async def listar_historico():
             d['id'] = doc.id
             historico.append(d)
         return {"ok": True, "items": historico}
-    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+    except Exception as e: 
+        print(f"ERRO HISTORICO: {e}")
+        raise HTTPException(500, f"Erro: {e}")
 
 # ==========================================================
-# PEDIDOS DE CONTEÚDO (APP -> PAINEL)
+# PEDIDOS DE CONTEÚDO (APP -> PAINEL) - CORRIGIDO
 # ==========================================================
 @router.get("/pedidos")
 async def listar_pedidos():
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        docs = db_firestore.collection('pedidos').where('status', '==', 'pendente').order_by('createdAt', direction=firestore.Query.DESCENDING).stream()
+        # Busca todos os pedidos sem filtros para evitar erro de índice composto
+        docs = db_firestore.collection('pedidos').stream()
         out = []
         for doc in docs:
             d = doc.to_dict()
-            if d.get('createdAt'): d['createdAt'] = d['createdAt'].isoformat()
+            
+            # Filtra no Python: se não tiver status, consideramos pendente.
+            status = d.get('status', 'pendente')
+            if status != 'pendente':
+                continue
+                
+            created_at = d.get('createdAt')
+            if created_at:
+                try: d['createdAt'] = created_at.isoformat()
+                except: d['createdAt'] = str(created_at)
+            else:
+                d['createdAt'] = None
+                
             d['id'] = doc.id
             out.append(d)
+            
+        print(f"[Pedidos] Encontrados {len(out)} pedidos pendentes.")
         return {"ok": True, "items": out}
-    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+    except Exception as e:
+        print(f"ERRO PEDIDOS: {e}")
+        raise HTTPException(500, f"Erro: {e}")
 
 @router.post("/pedidos/{pedido_id}/concluir")
 async def concluir_pedido(pedido_id: str):
