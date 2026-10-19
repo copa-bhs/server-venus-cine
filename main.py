@@ -4,8 +4,6 @@ import secrets
 import time
 import re
 import unicodedata
-import io
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -28,12 +26,13 @@ from config import (
     TMDB_ENABLED, TMDB_MAX_PER_CYCLE, PUBLIC_BASE_URL,
     IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD
 )
-from parser import fetch_filmes, fetch_series, fetch_canais, _clean_name, _extract_year
+from parser import _clean_name, _extract_year
 from info import fetch_movie_info, fetch_series_info
 from home import build_home_async, _slugify
 from proxy import (
     build_slug_map, get_by_slug, get_by_id,
     stream_proxy, stats as proxy_stats, total_slugs,
+    _SLUG_MAP, _ID_MAP
 )
 import tmdb
 
@@ -63,12 +62,10 @@ for sub in ("capas", "banners", "logos"):
     (UPLOAD_DIR / sub).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-
 _FILMES: list = []
 _SERIES: list = []
 _CANAIS: list = []
 
-_AUTO_REFRESH_TASK = None
 _HOME_CACHE: dict = {}
 _HOME_CACHE_TS: float = 0
 _HOME_CACHE_TTL = 300
@@ -77,14 +74,6 @@ _SYNC_LOGS = []
 
 def _stats() -> dict:
     return {"total_filmes": len(_FILMES), "total_series": len(_SERIES), "total_canais": len(_CANAIS)}
-
-def cache_valid() -> bool:
-    if not META_FILE.exists(): return False
-    try:
-        meta = json.loads(META_FILE.read_text())
-        return (time.time() - meta["timestamp"]) < CACHE_TTL
-    except Exception:
-        return False
 
 def _load_json(path, default=None):
     if not path.exists(): return default if default is not None else []
@@ -111,105 +100,6 @@ def _rebuild_slugs():
     build_slug_map({"filmes": _FILMES, "series": _SERIES, "canais": _CANAIS})
     print(f"[✓] Slugs gerados: {total_slugs()}")
 
-async def fetch_and_rebuild(force: bool = False):
-    global _FILMES, _SERIES, _CANAIS, _SYNC_LOGS
-
-    if not force and cache_valid() and load_index_from_disk():
-        print("[✓] Cache válido — usando arquivos em disco.")
-        _rebuild_slugs()
-        sincronizar(_FILMES, _SERIES, _CANAIS)
-        await manager.broadcast("catalogo_sincronizado", _stats())
-        return
-
-    _SYNC_LOGS.append("[•] Iniciando download do provedor IPTV...")
-    print("[•] Atualizando catálogo via API Xtream...")
-    t0 = time.time()
-    
-    old_stdout = sys.stdout
-    sys.stdout = buffer = io.StringIO()
-    
-    try:
-        filmes, series, canais = await asyncio.gather(
-            fetch_filmes(), fetch_series(), fetch_canais(),
-        )
-    finally:
-        sys.stdout = old_stdout
-        for line in buffer.getvalue().split('\n'):
-            if line.strip(): _SYNC_LOGS.append(line.strip())
-
-    if not filmes and not series and not canais:
-        _SYNC_LOGS.append("[!] ERRO CRÍTICO: O provedor retornou listas vazias. Verifique suas credenciais no .env.")
-        return
-
-    _FILMES = filmes
-    _SERIES = series
-    _CANAIS = canais
-    _save_all()
-    META_FILE.write_text(json.dumps({"timestamp": time.time()}))
-    _rebuild_slugs()
-    sincronizar(_FILMES, _SERIES, _CANAIS)
-    await manager.broadcast("catalogo_sincronizado", _stats())
-    
-    _SYNC_LOGS.append(f"[✓] Sucesso! Banco atualizado com {len(filmes)} filmes, {len(series)} séries e {len(canais)} canais.")
-    print(f"[✓] Catálogo atualizado em {time.time() - t0:.2f}s · {_stats()}")
-
-def _chave_filme(item: dict) -> str:
-    return f"{(item.get('titulo') or '').strip().lower()}|{item.get('ano') or ''}"
-
-def _chave_serie(item: dict) -> str:
-    return (item.get("titulo") or "").strip().lower()
-
-def _comparar(ant, novo, fn):
-    s = {fn(i) for i in ant if fn(i)}
-    return [i for i in novo if fn(i) and fn(i) not in s]
-
-async def detectar_novidades(filmes_ant, series_ant, canais_ant) -> dict:
-    fn = _comparar(filmes_ant, _FILMES, _chave_filme)
-    sn = _comparar(series_ant, _SERIES, _chave_serie)
-    cn = _comparar(canais_ant, _CANAIS, _chave_serie)
-    lim = TMDB_MAX_PER_CYCLE
-    for item in fn[:lim]:
-        d = await tmdb.buscar_filme(item.get("titulo") or "", item.get("ano"))
-        item["classificacao_tipo"] = "lancamento" if (d and d.get("recente")) else "catalogo"
-    for item in sn[:lim]:
-        d = await tmdb.buscar_serie(item.get("titulo") or "", item.get("ano"))
-        item["classificacao_tipo"] = "lancamento" if (d and d.get("recente")) else "catalogo"
-    return {
-        "detectado_em": time.time(), "detectado_em_str": time.strftime("%Y-%m-%d %H:%M:%S"), "tmdb_ativo": TMDB_ENABLED,
-        "totais": {"filmes_novos": len(fn), "series_novas": len(sn), "canais_novos": len(cn), "lancamentos": len([x for x in fn + sn if x.get("classificacao_tipo") == "lancamento"]), "catalogo": len([x for x in fn + sn if x.get("classificacao_tipo") == "catalogo"])},
-        "lancamentos": [x for x in fn + sn if x.get("classificacao_tipo") == "lancamento"][:50],
-        "catalogo": [x for x in fn + sn if x.get("classificacao_tipo") == "catalogo"][:50],
-        "canais": cn[:50],
-    }
-
-def logar_novidades(nov: dict):
-    t = nov["totais"]
-    total = t["filmes_novos"] + t["series_novas"] + t["canais_novos"]
-    if total == 0: return
-    print(f"🎉 {t['filmes_novos']} filmes, {t['series_novas']} séries novos.")
-
-async def auto_refresh_loop():
-    global _FILMES, _SERIES, _CANAIS, _HOME_CACHE_TS
-    print(f"[✓] Auto-refresh ativo (a cada {CACHE_TTL // 60}min)")
-    while True:
-        await asyncio.sleep(CACHE_TTL)
-        try:
-            fa, sa, ca = list(_FILMES), list(_SERIES), list(_CANAIS)
-            filmes, series, canais = await asyncio.gather(fetch_filmes(), fetch_series(), fetch_canais())
-            if not filmes and not series and not canais: continue
-            _FILMES, _SERIES, _CANAIS = filmes, series, canais
-            nov = await detectar_novidades(fa, sa, ca)
-            _save_all()
-            META_FILE.write_text(json.dumps({"timestamp": time.time()}))
-            _HOME_CACHE_TS = 0
-            _rebuild_slugs()
-            sincronizar(_FILMES, _SERIES, _CANAIS)
-            NOVIDADES_FILE.write_text(json.dumps(nov, ensure_ascii=False, indent=2), encoding="utf-8")
-            logar_novidades(nov)
-            await manager.broadcast("catalogo_sincronizado", _stats())
-        except Exception as e:
-            print(f"[!] Auto-refresh falhou: {e}")
-
 def paginate(items, page, size):
     total = len(items)
     tp = (total + size - 1) // size if size else 0
@@ -226,18 +116,21 @@ def _normalizar_busca(texto: str) -> str:
     t = re.sub(r'\b(the|os|as|o|a|um|uma|de|do|da)\b', ' ', t)
     return " ".join(t.split())
 
+# ==========================================================
+# STARTUP
+# ==========================================================
 @app.on_event("startup")
 async def startup():
-    global _AUTO_REFRESH_TASK
+    print("[•] Startup...")
     criar_tabelas()
-    try: await fetch_and_rebuild(force=False)
-    except Exception as e: print(f"[!] Startup falhou: {e}")
-    _AUTO_REFRESH_TASK = asyncio.create_task(auto_refresh_loop())
-
-@app.on_event("shutdown")
-async def shutdown():
-    if _AUTO_REFRESH_TASK:
-        _AUTO_REFRESH_TASK.cancel()
+    
+    # Apenas carrega o que já está no disco, NÃO baixa nada da internet
+    if load_index_from_disk():
+        _rebuild_slugs()
+        sincronizar(_FILMES, _SERIES, _CANAIS)
+        print(f"[✓] Catálogo carregado do disco: {_stats()}")
+    else:
+        print("[✓] Banco vazio. O sistema está pronto para receber conteúdo manual.")
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -258,31 +151,17 @@ def root():
 
 @app.get("/status")
 async def status():
-    meta = {}
-    if META_FILE.exists():
-        try: meta = json.loads(META_FILE.read_text())
-        except Exception: pass
-    idade = time.time() - meta.get("timestamp", 0) if meta else 0
     return {
-        "cached": bool(meta), "age_seconds": int(idade), "ttl_seconds": CACHE_TTL, "valid": idade < CACHE_TTL,
-        "auto_refresh_ativo": _AUTO_REFRESH_TASK is not None and not _AUTO_REFRESH_TASK.done(),
-        "sync_ativo": _SYNC_ATIVO, "tmdb_ativo": TMDB_ENABLED, "storage": "3 JSONs + SQLite", "public_base_url": PUBLIC_BASE_URL,
-        "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}, "stats": _stats(), "ws_clientes": manager.total()
+        "cached": False, "age_seconds": 0, "ttl_seconds": CACHE_TTL, "valid": True,
+        "auto_refresh_ativo": False, "sync_ativo": _SYNC_ATIVO, "tmdb_ativo": TMDB_ENABLED, 
+        "storage": "3 JSONs + SQLite", "public_base_url": PUBLIC_BASE_URL,
+        "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}, 
+        "stats": _stats(), "ws_clientes": manager.total()
     }
 
-async def _rodar_sync_bg():
-    global _SYNC_ATIVO, _SYNC_LOGS
-    _SYNC_ATIVO = True
-    _SYNC_LOGS = ["[•] Iniciando sincronização forçada..."]
-    try:
-        if META_FILE.exists(): META_FILE.unlink()
-        await fetch_and_rebuild(force=True)
-    except Exception as e:
-        _SYNC_LOGS.append(f"[!] Erro fatal: {e}")
-        print(f"[!] Erro na sincronização forçada: {e}")
-    finally:
-        _SYNC_ATIVO = False
-
+# ==========================================================
+# LIMPEZA TOTAL (WIPE)
+# ==========================================================
 async def _wipe_all_bg():
     global _SYNC_ATIVO, _SYNC_LOGS, _FILMES, _SERIES, _CANAIS
     _SYNC_ATIVO = True
@@ -297,34 +176,35 @@ async def _wipe_all_bg():
             
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
-        _SYNC_LOGS.append("[✓] Banco de dados e cache apagados.")
-
-        _FILMES, _SERIES, _CANAIS = [], [], []
-        _SYNC_LOGS.append("[•] Baixando TUDO do servidor IPTV novamente...")
         
-        await fetch_and_rebuild(force=True)
+        _FILMES.clear()
+        _SERIES.clear()
+        _CANAIS.clear()
+        
+        _SLUG_MAP.clear()
+        _ID_MAP.clear()
+        
+        _SYNC_LOGS.append("[✓] Banco de dados, cache e memória apagados com sucesso.")
+        _SYNC_LOGS.append("[✓] O sistema está totalmente vazio. Use 'IPTV Direto' para adicionar novos itens.")
     except Exception as e:
         _SYNC_LOGS.append(f"[!] Erro na limpeza: {e}")
         print(f"[!] Erro na limpeza: {e}")
     finally:
         _SYNC_ATIVO = False
 
-@app.post("/admin/force-sync")
-async def force_sync():
-    if _SYNC_ATIVO: return {"ok": False, "msg": "Já existe uma sincronização em andamento."}
-    asyncio.create_task(_rodar_sync_bg())
-    return {"ok": True, "msg": "Sincronização total iniciada em segundo plano."}
-
 @app.post("/admin/wipe-all")
 async def wipe_all():
-    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a sincronização atual terminar."}
+    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a operação atual terminar."}
     asyncio.create_task(_wipe_all_bg())
-    return {"ok": True, "msg": "Limpando tudo e baixando novamente..."}
+    return {"ok": True, "msg": "Limpando tudo..."}
 
 @app.get("/admin/force-sync/status")
 async def force_sync_status():
     return {"ativo": _SYNC_ATIVO, "stats": _stats(), "logs": _SYNC_LOGS}
 
+# ==========================================================
+# HOME / LISTAGENS BÁSICAS
+# ==========================================================
 @app.get("/home")
 async def home(force: bool = False):
     global _HOME_CACHE, _HOME_CACHE_TS
@@ -373,24 +253,7 @@ def categorias():
 
 @app.get("/novidades")
 def novidades():
-    if not NOVIDADES_FILE.exists(): return {"disponivel": False}
-    try: data = json.loads(NOVIDADES_FILE.read_text(encoding="utf-8")); data["disponivel"] = True; return data
-    except: return {"disponivel": False}
-
-@app.post("/novidades/verificar")
-async def verificar_novidades():
-    global _FILMES, _SERIES, _CANAIS
-    try:
-        t0 = time.time()
-        fa, sa, ca = list(_FILMES), list(_SERIES), list(_CANAIS)
-        filmes, series, canais = await asyncio.gather(fetch_filmes(), fetch_series(), fetch_canais())
-        if not filmes and not series and not canais: raise Exception("Provedor retornou vazio.")
-        _FILMES, _SERIES, _CANAIS = filmes, series, canais
-        nov = await detectar_novidades(fa, sa, ca)
-        NOVIDADES_FILE.write_text(json.dumps(nov, ensure_ascii=False, indent=2), encoding="utf-8")
-        await manager.broadcast("novidades", nov["totais"])
-        return {"ok": True, "duracao_segundos": round(time.time() - t0, 2), "totais": nov["totais"]}
-    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+    return {"disponivel": False}
 
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, force: bool = False):
@@ -417,24 +280,19 @@ class IPTVAddPayload(BaseModel):
 
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
-    print(f"[IPTV Busca] Iniciando busca por '{q}' (Tipo: {tipo})")
     q_norm = _normalizar_busca(q)
-    
     action = "get_vod_streams" if tipo == "filme" else "get_series"
     url = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}"
     
     async with httpx.AsyncClient(timeout=60) as client:
         try:
-            print(f"[IPTV Busca] Chamando API do provedor...")
             r = await client.get(url)
             data = r.json()
-            print(f"[IPTV Busca] API respondeu. Tamanho da lista: {len(data) if isinstance(data, list) else 'Formato inválido'}")
         except Exception as e:
-            print(f"[IPTV Busca] ERRO: {e}")
             raise HTTPException(500, f"Erro ao conectar no servidor IPTV: {e}")
             
     if not isinstance(data, list):
-        raise HTTPException(500, "Servidor IPTV retornou formato inválido (não é uma lista). Pode ser bloqueio de Cloudflare ou erro de autenticação.")
+        raise HTTPException(500, "Servidor IPTV retornou formato inválido.")
         
     if tipo == "filme":
         existentes = {f.iptv_id for f in db.query(FilmeDB).all() if f.iptv_id}
@@ -473,7 +331,6 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
                 "tipo": tipo
             })
             
-    print(f"[IPTV Busca] Encontrados {len(resultados)} itens novos.")
     return {"items": resultados[:100]}
 
 @app.post("/admin/iptv/adicionar")

@@ -50,7 +50,6 @@
             <a href="#series" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="series"><i class="fa-solid fa-tv w-4 text-center"></i> Séries</a>
             <a href="#canais" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="canais"><i class="fa-solid fa-satellite-dish w-4 text-center"></i> Canais</a>
             <div class="my-2 px-4"><div class="h-px bg-[#262626]"></div></div>
-            <a href="#novidades" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="novidades"><i class="fa-solid fa-sparkles w-4 text-center"></i> Novidades</a>
             <a href="#proxy" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="proxy"><i class="fa-solid fa-tower-broadcast w-4 text-center"></i> Proxy</a>
             <a href="#sistema" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="sistema"><i class="fa-solid fa-server w-4 text-center"></i> Sistema</a>
         </nav>
@@ -183,18 +182,14 @@ const Api = {
     },
     status() { return this.get('/status'); },
     proxyStats() { return this.get('/proxy/stats'); },
-    novidades() { return this.get('/novidades'); },
     adminFilmes: (q='', page=1, size=30) => Api.get(`/admin/filmes?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminSeries: (q='', page=1, size=30) => Api.get(`/admin/series?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminCanais: (q='', page=1, size=30) => Api.get(`/admin/canais?q=${encodeURIComponent(q)}&page=${page}&size=${size}`),
     adminItem: (tipo, id) => Api.get(`/admin/item/${tipo}/${id}`),
     notifHistorico() { return this.get('/admin/notificacoes/historico'); },
     notifEnviar(payload) { return this.post('/admin/notificacoes/enviar', payload); },
-    forceSync() { return this.post('/admin/force-sync'); },
     wipeAll() { return this.post('/admin/wipe-all'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); },
-    
-    // Busca IPTV
     iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
     iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload)
 };
@@ -223,7 +218,7 @@ const Router = {
             dashboard: 'Dashboard', iptv: 'IPTV Direto (Adicionar Manual)',
             notificacoes: 'Notificações Push',
             slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
-            novidades: 'Novidades', proxy: 'Proxy de Streaming', sistema: 'Sistema'
+            proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
         document.getElementById('page-title').textContent = titles[h] || h;
         this.render();
@@ -243,7 +238,6 @@ const Router = {
             else if (this.current === 'filmes') await Views.list(c, 'filme');
             else if (this.current === 'series') await Views.list(c, 'serie');
             else if (this.current === 'canais') await Views.list(c, 'canal');
-            else if (this.current === 'novidades') await Views.novidades(c);
             else if (this.current === 'proxy') await Views.proxy(c);
             else if (this.current === 'sistema') await Views.sistema(c);
         } catch (e) {
@@ -268,18 +262,15 @@ const Views = {
             <div class="stat-card rounded-xl p-5 mb-6 border-red-600/30 bg-red-600/5">
                 <div class="flex flex-col md:flex-row items-center gap-4 mb-4">
                     <div class="w-14 h-14 rounded-full bg-red-600/20 flex items-center justify-center flex-shrink-0">
-                        <i class="fa-solid fa-arrows-rotate text-red-500 text-xl" id="sync-icon"></i>
+                        <i class="fa-solid fa-trash text-red-500 text-xl" id="sync-icon"></i>
                     </div>
                     <div class="flex-1 text-center md:text-left">
-                        <h3 class="text-sm font-bold text-white mb-1">Gerenciar Catálogo</h2>
-                        <p class="text-xs text-gray-400">Baixe as atualizações ou faça uma limpeza total no banco de dados.</p>
+                        <h3 class="text-sm font-bold text-white mb-1">Zona de Perigo</h2>
+                        <p class="text-xs text-gray-400">Apaga TODOS os filmes, séries, canais, capas e o banco de dados inteiro. O sistema ficará totalmente vazio.</p>
                     </div>
                     <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-                        <button id="btn-force-sync" onclick="Actions.forceSync()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] hover:bg-[#222] text-xs font-bold flex items-center justify-center gap-2">
-                            <i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar
-                        </button>
                         <button id="btn-wipe-all" onclick="Actions.wipeAll()" class="h-10 px-4 rounded-lg bg-red-900/50 border border-red-700/50 hover:bg-red-800 text-red-400 hover:text-white text-xs font-bold flex items-center justify-center gap-2">
-                            <i class="fa-solid fa-trash"></i> Apagar Tudo
+                            <i class="fa-solid fa-bomb"></i> Apagar Tudo
                         </button>
                     </div>
                 </div>
@@ -288,34 +279,33 @@ const Views = {
 
             <div class="grid md:grid-cols-3 gap-4 mb-6">
                 <div class="stat-card rounded-xl p-4">
-                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Cache M3U</div>
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="w-2 h-2 rounded-full ${s.valid ? 'bg-green-400' : 'bg-yellow-400'}"></span>
-                        <span class="text-sm font-medium">${s.valid ? 'Válido' : 'Expirado'}</span>
-                    </div>
-                    <div class="text-[11px] text-gray-500">${s.age_seconds ? `Atualizado há ${Math.floor(s.age_seconds / 60)} min` : 'Sem dados'}</div>
-                </div>
-                <div class="stat-card rounded-xl p-4">
                     <div class="text-xs font-semibold text-gray-400 uppercase mb-2">SQLite</div>
                     <div class="flex items-center gap-2 mb-2">
                         <span class="w-2 h-2 rounded-full bg-green-400"></span>
-                        <span class="text-sm font-medium">Sincronizado</span>
+                        <span class="text-sm font-medium">Conectado</span>
                     </div>
-                    <div class="text-[11px] text-gray-500">Espelho dos 3 JSONs</div>
+                    <div class="text-[11px] text-gray-500">Banco local ativo</div>
                 </div>
                 <div class="stat-card rounded-xl p-4">
                     <div class="text-xs font-semibold text-gray-400 uppercase mb-2">Clientes WS</div>
                     <div class="text-2xl font-black" id="ws-clientes">${s.ws_clientes || 0}</div>
                     <div class="text-[11px] text-gray-500 mt-1">conectados agora</div>
                 </div>
+                <div class="stat-card rounded-xl p-4">
+                    <div class="text-xs font-semibold text-gray-400 uppercase mb-2">TMDB</div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-2 h-2 rounded-full ${s.tmdb_ativo ? 'bg-green-400' : 'bg-red-400'}"></span>
+                        <span class="text-sm font-medium">${s.tmdb_ativo ? 'Ativo' : 'Desativado'}</span>
+                    </div>
+                    <div class="text-[11px] text-gray-500">Enriquecimento de dados</div>
+                </div>
             </div>
         `;
         
         if (s.sync_ativo) {
             document.getElementById('sync-logs-area').classList.remove('hidden');
-            document.getElementById('btn-force-sync').disabled = true;
             document.getElementById('btn-wipe-all').disabled = true;
-            document.getElementById('btn-force-sync').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizando...';
+            document.getElementById('btn-wipe-all').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
             Actions.pollSync();
         }
     },
@@ -327,7 +317,7 @@ const Views = {
         c.innerHTML = `
             <div class="stat-card rounded-xl p-5 mb-6 border-blue-500/30 bg-blue-600/5">
                 <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Direta no Servidor IPTV</div>
-                <p class="text-xs text-gray-400 mb-4">Pesquise filmes ou séries que não estão no banco. O sistema oculta o que já foi adicionado.</p>
+                <p class="text-xs text-gray-400 mb-4">Pesquise filmes ou séries e adicione ao seu catálogo. O sistema oculta o que você já adicionou.</p>
                 
                 <div class="flex flex-wrap gap-2 items-end">
                     <div class="flex-1 min-w-[140px]">
@@ -363,7 +353,7 @@ const Views = {
         
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
-        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar de 10 a 60 segundos dependendo do tamanho do catálogo.</div></div>`;
+        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div><div class="text-[10px] text-gray-600">Isso pode demorar de 10 a 60 segundos.</div></div>`;
 
         try {
             const r = await Api.iptvBuscar(q, tipo);
@@ -382,7 +372,7 @@ const Views = {
                             <div class="text-xs font-bold text-white truncate">${esc(it.titulo)}</div>
                             <div class="text-[10px] text-gray-500 mb-2">${it.ano || '—'}</div>
                             <button onclick='Views._iptvAdicionar(${JSON.stringify(it)})' class="w-full h-8 rounded bg-green-600/20 text-green-400 hover:bg-green-600 hover:text-white text-xs font-bold transition">
-                                <i class="fa-solid fa-plus mr-1"></i> Adicionar
+                                <i class="fa-solid fa-plus mr-1"></i> Adicionar ao Banco
                             </button>
                         </div>
                     </div>
@@ -780,13 +770,6 @@ const Views = {
 
     fecharModal() { document.getElementById('modal-root').innerHTML = ''; },
 
-    async novidades(c) {
-        const data = await Api.novidades().catch(() => ({ disponivel: false }));
-        if (!data.disponivel) { c.innerHTML = `<div class="text-center py-16 text-gray-500">Nenhuma detecção ainda.</div>`; return; }
-        const t = data.totais || {};
-        c.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">${this.statCard('Filmes novos', fmt(t.filmes_novos), 'fa-film', 'text-blue-400')}${this.statCard('Séries novas', fmt(t.series_novas), 'fa-tv', 'text-purple-400')}${this.statCard('Canais novos', fmt(t.canais_novos), 'fa-satellite-dish', 'text-green-400')}${this.statCard('Lançamentos', fmt(t.lancamentos), 'fa-star', 'text-yellow-400')}</div><div class="text-xs text-gray-500"><i class="fa-solid fa-clock mr-1"></i> Detectado em ${esc(data.detectado_em_str || '—')}</div>`;
-    },
-
     async proxy(c) {
         const p = await Api.proxyStats().catch(() => ({}));
         c.innerHTML = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">${this.statCard('Slugs', fmt(p.slugs_carregados), 'fa-link', 'text-blue-400')}${this.statCard('Streams ativos', fmt(p.ativo_total), 'fa-play', 'text-green-400')}${this.statCard('Limite global', fmt(p.limite_total), 'fa-gauge', 'text-yellow-400')}${this.statCard('IPs', fmt(p.ips_conectados), 'fa-network-wired', 'text-purple-400')}</div>`;
@@ -794,37 +777,23 @@ const Views = {
 
     async sistema(c) {
         const s = await Api.status().catch(() => ({}));
-        c.innerHTML = `<div class="stat-card rounded-xl p-4"><div class="text-xs font-semibold text-gray-400 uppercase mb-3">Estado</div><div class="space-y-2 text-xs"><div class="flex justify-between"><span class="text-gray-500">Cache M3U</span><span>${s.valid ? '✅ Válido' : '⚠️ Expirado'}</span></div><div class="flex justify-between"><span class="text-gray-500">Auto-refresh</span><span>${s.auto_refresh_ativo ? '✅ Ativo' : '❌ Parado'}</span></div><div class="flex justify-between"><span class="text-gray-500">TMDB</span><span>${s.tmdb_ativo ? '✅ Ativo' : '❌ Off'}</span></div><div class="flex justify-between"><span class="text-gray-500">Clientes WS</span><span>${s.ws_clientes || 0}</span></div><div class="flex justify-between"><span class="text-gray-500">URL pública</span><span class="font-mono text-[10px]">${esc(s.public_base_url || '—')}</span></div></div></div>`;
+        c.innerHTML = `<div class="stat-card rounded-xl p-4"><div class="text-xs font-semibold text-gray-400 uppercase mb-3">Estado</div><div class="space-y-2 text-xs"><div class="flex justify-between"><span class="text-gray-500">Auto-refresh</span><span>❌ Parado (Sistema Manual)</span></div><div class="flex justify-between"><span class="text-gray-500">TMDB</span><span>${s.tmdb_ativo ? '✅ Ativo' : '❌ Off'}</span></div><div class="flex justify-between"><span class="text-gray-500">Clientes WS</span><span>${s.ws_clientes || 0}</span></div><div class="flex justify-between"><span class="text-gray-500">URL pública</span><span class="font-mono text-[10px]">${esc(s.public_base_url || '—')}</span></div></div></div>`;
     }
 };
 
 const Actions = {
-    async forceSync() {
-        if (!confirm('Isso vai baixar TODO o catálogo novamente. Pode demorar alguns minutos. Deseja continuar?')) return;
-        const btn = document.getElementById('btn-force-sync'); const logsArea = document.getElementById('sync-logs-area');
-        btn.disabled = true; document.getElementById('btn-wipe-all').disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Iniciando...';
-        logsArea.classList.remove('hidden'); logsArea.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
-        try {
-            const r = await Api.forceSync();
-            if (!r.ok) throw new Error(r.msg);
-            Toast.show('🚀 Sincronização iniciada!', 'info', 5000);
-            this.pollSync();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error', 5000); btn.disabled = false; document.getElementById('btn-wipe-all').disabled = false; btn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar'; logsArea.classList.add('hidden'); }
-    },
-
     async wipeAll() {
-        if (!confirm('⚠️ ATENÇÃO: Isso vai APAGAR todos os filmes, séries, canais, capas editadas e o banco de dados inteiro. O sistema vai baixar tudo do zero. Tem certeza?')) return;
+        if (!confirm('⚠️ ATENÇÃO: Isso vai APAGAR todos os filmes, séries, canais, capas editadas e o banco de dados inteiro. O sistema vai ficar TOTALMENTE VAZIO. Tem certeza?')) return;
         const btn = document.getElementById('btn-wipe-all'); const logsArea = document.getElementById('sync-logs-area');
-        btn.disabled = true; document.getElementById('btn-force-sync').disabled = true;
+        btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
         logsArea.classList.remove('hidden'); logsArea.innerHTML = '<div class="text-red-500 font-bold">LIMPANDO O SISTEMA...</div>';
         try {
             const r = await Api.wipeAll();
             if (!r.ok) throw new Error(r.msg);
-            Toast.show('🚨 Limpeza iniciada! Baixando tudo novamente...', 'warn', 6000);
+            Toast.show('🚨 Limpeza iniciada! O sistema ficará vazio.', 'warn', 6000);
             this.pollSync();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error', 5000); btn.disabled = false; document.getElementById('btn-force-sync').disabled = false; btn.innerHTML = '<i class="fa-solid fa-trash"></i> Apagar Tudo'; logsArea.classList.add('hidden'); }
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error', 5000); btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-bomb"></i> Apagar Tudo'; logsArea.classList.add('hidden'); }
     },
 
     async pollSync() {
@@ -835,12 +804,9 @@ const Actions = {
                 if (logsArea) { logsArea.innerHTML = st.logs.map(l => `<div>${esc(l)}</div>`).join(''); logsArea.scrollTop = logsArea.scrollHeight; }
                 if (!st.ativo) {
                     clearInterval(timer);
-                    const btnS = document.getElementById('btn-force-sync'); const btnW = document.getElementById('btn-wipe-all');
-                    if (btnS) { btnS.disabled = false; btnS.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Sincronizar'; }
-                    if (btnW) { btnW.disabled = false; btnW.innerHTML = '<i class="fa-solid fa-trash"></i> Apagar Tudo'; }
-                    const lastLog = st.logs[st.logs.length - 1] || "";
-                    if (lastLog.includes("[!]")) { Toast.show(`❌ Falha na operação. Verifique os logs.`, 'error', 8000); }
-                    else { Toast.show(`✅ Concluído! ${st.stats.total_filmes} filmes, ${st.stats.total_series} séries.`, 'success', 8000); }
+                    const btnW = document.getElementById('btn-wipe-all');
+                    if (btnW) { btnW.disabled = false; btnW.innerHTML = '<i class="fa-solid fa-bomb"></i> Apagar Tudo'; }
+                    Toast.show(`✅ Sistema limpo com sucesso!`, 'success', 8000);
                     if (Router.current === 'dashboard') Router.render();
                 }
             } catch (e) { console.error(e); }
