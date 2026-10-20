@@ -1,6 +1,3 @@
-"""
-Banco de dados SQLite do sistema.
-"""
 from datetime import datetime
 from pathlib import Path
 
@@ -21,7 +18,7 @@ Base = declarative_base()
 class Filme(Base):
     __tablename__ = "filmes"
     id         = Column(Integer, primary_key=True)
-    iptv_id    = Column(String, unique=True, index=True)
+    iptv_id    = Column(String, unique=True, index=True) 
     titulo     = Column(String, nullable=False, index=True)
     capa       = Column(String)
     banner     = Column(String)
@@ -29,10 +26,10 @@ class Filme(Base):
     ano        = Column(Integer, index=True)
     categoria  = Column(String, index=True)
     sinopse    = Column(String)
-    url        = Column(String, nullable=False)
+    url        = Column(String, nullable=False) 
     editado    = Column(Boolean, default=False)
-    added_by_name = Column(String) # ⚡ Novo
-    added_by_uid  = Column(String) # ⚡ Novo
+    added_by_name = Column(String)
+    added_by_uid  = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -48,10 +45,26 @@ class Serie(Base):
     categoria  = Column(String, index=True)
     sinopse    = Column(String)
     editado    = Column(Boolean, default=False)
-    added_by_name = Column(String) # ⚡ Novo
-    added_by_uid  = Column(String) # ⚡ Novo
+    added_by_name = Column(String)
+    added_by_uid  = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    episodios = relationship("Episodio", back_populates="serie", cascade="all, delete-orphan")
+
+class Episodio(Base):
+    __tablename__ = "episodios"
+    id         = Column(Integer, primary_key=True)
+    serie_id   = Column(Integer, ForeignKey("series.id"), nullable=False)
+    temporada  = Column(Integer, index=True)
+    episodio   = Column(Integer, index=True)
+    titulo     = Column(String)
+    url        = Column(String, nullable=False)
+    capa       = Column(String)
+    sinopse    = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    serie = relationship("Serie", back_populates="episodios")
 
 class Canal(Base):
     __tablename__ = "canais"
@@ -62,8 +75,6 @@ class Canal(Base):
     categoria  = Column(String, index=True)
     url        = Column(String, nullable=False)
     editado    = Column(Boolean, default=False)
-    added_by_name = Column(String) # ⚡ Novo
-    added_by_uid  = Column(String) # ⚡ Novo
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
