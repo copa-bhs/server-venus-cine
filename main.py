@@ -39,7 +39,7 @@ from db import (
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
-app = FastAPI(title="IPTV Organizer Pro", version="12.1.0")
+app = FastAPI(title="IPTV Organizer Pro", version="12.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(notificacoes_router)
 
@@ -175,7 +175,7 @@ async def info_filme(filme_id: str): return await fetch_movie_info(filme_id)
 async def info_serie(serie_id: str): return await fetch_series_info(serie_id)
 
 # ==========================================================
-# ADMIN - BUSCA E ADIÇÃO
+# ADMIN - BUSCA E ADIÇÃO (IPTV)
 # ==========================================================
 class IPTVAddPayload(BaseModel):
     id: str; tipo: str; titulo: str; capa: Optional[str] = None; ano: Optional[int] = None; url: Optional[str] = None
@@ -252,8 +252,61 @@ async def admin_iptv_adicionar_lote(payload: IPTVLotePayload, db: Session = Depe
     return {"ok": True, "adicionados": adicionados}
 
 # ==========================================================
-# UPLOAD MANUAL
+# ADMIN - LISTAGEM (LÊ DIRETO DO BANCO)
 # ==========================================================
+@app.get("/admin/filmes")
+def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
+    query = db.query(FilmeDB)
+    if q: query = query.filter(FilmeDB.titulo.ilike(f"%{q}%"))
+    total = query.count(); itens = query.order_by(FilmeDB.titulo).offset((page - 1) * size).limit(size).all()
+    return {"total": total, "page": page, "size": size, "items": [{"id": f.id, "iptv_id": f.iptv_id, "titulo": f.titulo, "capa": f.capa, "banner": f.banner, "logo": f.logo, "ano": f.ano, "categoria": f.categoria, "sinopse": f.sinopse, "url": f.url, "editado": f.editado} for f in itens]}
+
+@app.get("/admin/series")
+def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
+    query = db.query(SerieDB)
+    if q: query = query.filter(SerieDB.titulo.ilike(f"%{q}%"))
+    total = query.count(); itens = query.order_by(SerieDB.titulo).offset((page - 1) * size).limit(size).all()
+    return {"total": total, "page": page, "size": size, "items": [{"id": s.id, "iptv_id": s.iptv_id, "titulo": s.titulo, "capa": s.capa, "banner": s.banner, "logo": s.logo, "ano": s.ano, "categoria": s.categoria, "sinopse": s.sinopse, "editado": s.editado} for s in itens]}
+
+@app.get("/admin/canais")
+def admin_canais(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
+    query = db.query(CanalDB)
+    if q: query = query.filter(CanalDB.titulo.ilike(f"%{q}%"))
+    total = query.count(); itens = query.order_by(CanalDB.titulo).offset((page - 1) * size).limit(size).all()
+    return {"total": total, "page": page, "size": size, "items": [{"id": c.id, "iptv_id": c.iptv_id, "titulo": c.titulo, "capa": c.capa, "categoria": c.categoria, "url": c.url, "editado": c.editado} for c in itens]}
+
+@app.get("/admin/item/{tipo}/{item_id}")
+def admin_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
+    if tipo == "filme": it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+    elif tipo == "serie": it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+    elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
+    else: raise HTTPException(400, "inválido")
+    
+    if it: return {c.name: getattr(it, c.name) for c in it.__table__.columns}
+    
+    lista = _FILMES if tipo == "filme" else (_SERIES if tipo == "serie" else _CANAIS)
+    mem_item = next((x for x in lista if str(x.get("id")) == str(item_id)), None)
+    if not mem_item: raise HTTPException(404, "Item não encontrado")
+    return mem_item
+
+@app.delete("/admin/item/{tipo}/{item_id}")
+def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
+    global _FILMES, _SERIES, _CANAIS
+    if tipo == "filme":
+        it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+        if it: db.delete(it); db.commit()
+        _FILMES[:] = [f for f in _FILMES if str(f.get("id")) != str(item_id)]
+    elif tipo == "serie":
+        it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+        if it: db.delete(it); db.commit()
+        _SERIES[:] = [s for s in _SERIES if str(s.get("id")) != str(item_id)]
+    elif tipo == "canal":
+        it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
+        if it: db.delete(it); db.commit()
+        _CANAIS[:] = [c for c in _CANAIS if str(c.get("id")) != str(item_id)]
+    _rebuild_slugs(); _save_all()
+    return {"ok": True}
+
 async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
     if not arq or not arq.filename: return None
     ext = Path(arq.filename).suffix.lower()
@@ -263,6 +316,65 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
         while chunk := await arq.read(1024 * 1024): f.write(chunk)
     return f"/uploads/{sub}/{nome}"
 
+def _upsert_db_item(db, tipo, item_id, form_data, uploads):
+    global _FILMES, _SERIES, _CANAIS
+    obj = None
+    if tipo == "filme": obj = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+    elif tipo == "serie": obj = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+    elif tipo == "canal": obj = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
+
+    if not obj:
+        if tipo == "filme": obj = FilmeDB(iptv_id=item_id, url="")
+        elif tipo == "serie": obj = SerieDB(iptv_id=item_id)
+        elif tipo == "canal": obj = CanalDB(iptv_id=item_id, url="")
+        db.add(obj)
+
+    for k, v in form_data.items():
+        if v is not None: setattr(obj, k, v)
+    for k, v in uploads.items():
+        if v: setattr(obj, k, v)
+    
+    if hasattr(obj, 'editado'): obj.editado = True
+    db.commit(); db.refresh(obj)
+    
+    lista = _FILMES if tipo == "filme" else (_SERIES if tipo == "serie" else _CANAIS)
+    for it in lista:
+        if str(it.get("id")) == str(item_id):
+            for k, v in form_data.items():
+                if v is not None: it[k] = v
+            for k, v in uploads.items():
+                if v: it[k] = v
+            break
+    _save_all(); _rebuild_slugs()
+    return obj
+
+@app.put("/admin/filme/{item_id}")
+async def editar_filme(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+    uploads = {"capa": await _salvar_upload(capa, "capas"), "banner": await _salvar_upload(banner, "banners"), "logo": await _salvar_upload(logo, "logos")}
+    form = {"titulo": titulo, "ano": ano, "categoria": categoria, "sinopse": sinopse, "url": url}
+    obj = _upsert_db_item(db, "filme", item_id, form, uploads)
+    await manager.broadcast("item_editado", {"tipo": "filme", "id": obj.id, "titulo": obj.titulo})
+    return {"ok": True, "id": obj.id, "titulo": obj.titulo}
+
+@app.put("/admin/serie/{item_id}")
+async def editar_serie(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+    uploads = {"capa": await _salvar_upload(capa, "capas"), "banner": await _salvar_upload(banner, "banners"), "logo": await _salvar_upload(logo, "logos")}
+    form = {"titulo": titulo, "ano": ano, "categoria": categoria, "sinopse": sinopse}
+    obj = _upsert_db_item(db, "serie", item_id, form, uploads)
+    await manager.broadcast("item_editado", {"tipo": "serie", "id": obj.id, "titulo": obj.titulo})
+    return {"ok": True, "id": obj.id, "titulo": obj.titulo}
+
+@app.put("/admin/canal/{item_id}")
+async def editar_canal(item_id: str, titulo: Optional[str] = Form(None), categoria: Optional[str] = Form(None), url: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+    uploads = {"capa": await _salvar_upload(capa, "capas")}
+    form = {"titulo": titulo, "categoria": categoria, "url": url}
+    obj = _upsert_db_item(db, "canal", item_id, form, uploads)
+    await manager.broadcast("item_editado", {"tipo": "canal", "id": obj.id, "titulo": obj.titulo})
+    return {"ok": True, "id": obj.id, "titulo": obj.titulo}
+
+# ==========================================================
+# UPLOAD MANUAL
+# ==========================================================
 @app.post("/admin/manual/filme")
 async def upload_manual_filme(
     titulo: str = Form(...), ano: Optional[int] = Form(None), categoria: str = Form("Manual"),
@@ -428,7 +540,7 @@ async def importar_lote_bg_status():
     return {"ativo": _IMPORT_ATIVO, "logs": _IMPORT_LOGS, "stats": _stats()}
 
 # ==========================================================
-# LIMPEZA E SLIDER
+# LIMPEZA, SLIDER E PROXY
 # ==========================================================
 async def _wipe_all_bg():
     global _SYNC_ATIVO, _FILMES, _SERIES, _CANAIS
@@ -525,9 +637,6 @@ async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(g
     await manager.broadcast("slider_atualizado", {"acao": "reordenar"})
     return {"ok": True}
 
-# ==========================================================
-# PROXY STREAM E FINAL DO ARQUIVO
-# ==========================================================
 _EPISODIO_RE = re.compile(r'^(.+?)-t(\d+)-e(\d+)$')
 
 async def _resolver_episodio_sob_demanda(slug: str):
