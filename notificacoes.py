@@ -36,6 +36,9 @@ class PedidoConcluidoPayload(BaseModel):
     titulo: str
     tipo: str
 
+class AlterarPlanoPayload(BaseModel):
+    plano: str
+
 @router.post("/enviar")
 async def enviar_notificacao(payload: NotificacaoPayload):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
@@ -90,7 +93,7 @@ async def listar_historico():
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
 # ==========================================================
-# GESTÃO DE USUÁRIOS (NOVO)
+# GESTÃO DE USUÁRIOS
 # ==========================================================
 @router.get("/usuarios")
 async def listar_usuarios():
@@ -105,9 +108,9 @@ async def listar_usuarios():
                 "nome": d.get("nome") or d.get("displayName") or "Sem Nome",
                 "email": d.get("email") or "Sem Email",
                 "foto": d.get("foto") or d.get("photoURL") or "",
-                "bloqueado": d.get("bloqueado", False)
+                "bloqueado": d.get("bloqueado", False),
+                "plano": d.get("plano", "Grátis") # ⚡ Puxa o plano
             })
-        # Ordena por nome
         out.sort(key=lambda x: x["nome"].lower())
         return {"ok": True, "items": out}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
@@ -116,9 +119,7 @@ async def listar_usuarios():
 async def bloquear_usuario(uid: str, bloqueado: bool = True):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # Bloqueia/Desbloqueia no Firebase Auth
         auth.update_user(uid, disabled=bloqueado)
-        # Atualiza no Firestore para o App ler rápido
         db_firestore.collection('usuarios').document(uid).update({'bloqueado': bloqueado})
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
@@ -127,10 +128,38 @@ async def bloquear_usuario(uid: str, bloqueado: bool = True):
 async def deletar_usuario(uid: str):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # Deleta do Firebase Auth
         auth.delete_user(uid)
-        # Deleta do Firestore
         db_firestore.collection('usuarios').document(uid).delete()
+        return {"ok": True}
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+
+@router.post("/usuarios/{uid}/alterar-plano")
+async def alterar_plano(uid: str, payload: AlterarPlanoPayload):
+    if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
+    try:
+        # 1. Atualiza o plano no Firestore
+        db_firestore.collection('usuarios').document(uid).update({'plano': payload.plano})
+        
+        # 2. Dispara a notificação automática de mudança de plano
+        msg_titulo = "Seu plano foi atualizado! 🌟"
+        msg_corpo = f"Olá! Seu novo plano agora é: {payload.plano}. Aproveite todos os benefícios!"
+        
+        tokens = [t.id for t in db_firestore.collection('usuarios').document(uid).collection('fcm_tokens').stream()]
+        if tokens:
+            msg = messaging.MulticastMessage(
+                notification=messaging.Notification(title=msg_titulo, body=msg_corpo),
+                data={'type': 'plano', 'plano': payload.plano},
+                tokens=tokens, android=messaging.AndroidConfig(priority='high')
+            )
+            messaging.send_each_for_multicast(msg)
+            
+        # Salva também na lista de notificações do app
+        doc_notif = db_firestore.collection('notificacoes').document()
+        doc_notif.set({
+            'title': msg_titulo, 'body': msg_corpo, 'type': 'geral', 'targetUid': uid,
+            'createdAt': firestore.SERVER_TIMESTAMP, 'readBy': [], 'deletedBy': []
+        })
+        
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 

@@ -204,7 +204,8 @@ const Api = {
     // Users API
     usuarios() { return this.get('/admin/notificacoes/usuarios'); },
     bloquearUsuario(uid, status) { return this.post(`/admin/notificacoes/usuarios/${uid}/bloquear?bloqueado=${status}`); },
-    deletarUsuario(uid) { return this.del(`/admin/notificacoes/usuarios/${uid}`); }
+    deletarUsuario(uid) { return this.del(`/admin/notificacoes/usuarios/${uid}`); },
+    alterarPlano(uid, plano) { return this.post(`/admin/notificacoes/usuarios/${uid}/alterar-plano`, { plano }); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -297,7 +298,7 @@ const Views = {
     },
 
     // ============================================================
-    // USUÁRIOS (NOVO)
+    // USUÁRIOS (COM PLANO E NOTIFICAÇÃO RÁPIDA)
     // ============================================================
     async usuarios(c) {
         const data = await Api.usuarios().catch(() => ({ items: [] }));
@@ -328,8 +329,20 @@ const Views = {
                                     <div class="text-sm font-bold text-white truncate">${esc(u.nome)}</div>
                                     <div class="text-[10px] text-gray-400 truncate">${esc(u.email)}</div>
                                 </div>
+                                <div class="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold">
+                                    ${esc(u.plano || 'Grátis')}
+                                </div>
                             </div>
                             <div class="text-[9px] font-mono text-gray-600 truncate mb-3">UID: ${esc(u.uid)}</div>
+                            
+                            <div class="grid grid-cols-2 gap-2 mb-2">
+                                <button onclick="Views._enviarNotifRapida('${u.uid}', '${esc(u.nome)}')" class="h-8 rounded bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white text-[10px] font-bold transition">
+                                    <i class="fa-solid fa-bell mr-1"></i> Notificar
+                                </button>
+                                <button onclick="Views._alterarPlano('${u.uid}', '${esc(u.nome)}', '${u.plano}')" class="h-8 rounded bg-purple-600/20 hover:bg-purple-600 text-purple-400 hover:text-white text-[10px] font-bold transition">
+                                    <i class="fa-solid fa-crown mr-1"></i> Plano
+                                </button>
+                            </div>
                             
                             <div class="flex gap-2 mt-auto">
                                 ${u.bloqueado 
@@ -343,6 +356,47 @@ const Views = {
                 </div>
             `}
         `;
+    },
+
+    _enviarNotifRapida(uid, nome) {
+        Router.go('notificacoes');
+        setTimeout(() => {
+            document.getElementById('notif-target').value = 'specific';
+            document.getElementById('notif-user-area').classList.remove('hidden');
+            Views._loadUsuariosNotif(uid);
+            document.getElementById('notif-title').value = `Mensagem para ${nome}`;
+            Toast.show(`Destinatário definido: ${nome}`, 'info');
+        }, 400);
+    },
+
+    _alterarPlano(uid, nome, planoAtual) {
+        const root = document.getElementById('modal-root');
+        root.innerHTML = `
+            <div class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onclick="if(event.target===this)Views.fecharModal()">
+                <div class="bg-[#141414] rounded-2xl w-full max-w-sm border border-[#262626] p-5">
+                    <h3 class="font-bold text-sm mb-4">Alterar Plano: ${esc(nome)}</h3>
+                    <select id="novo-plano" class="input-dark mb-4">
+                        <option value="Grátis" ${planoAtual === 'Grátis' ? 'selected' : ''}>Grátis</option>
+                        <option value="Premium" ${planoAtual === 'Premium' ? 'selected' : ''}>Premium</option>
+                        <option value="VIP" ${planoAtual === 'VIP' ? 'selected' : ''}>VIP</option>
+                    </select>
+                    <div class="flex gap-2">
+                        <button onclick="Views.fecharModal()" class="flex-1 h-10 rounded-lg bg-[#1a1a1a] border border-[#262626] text-xs">Cancelar</button>
+                        <button onclick="Views._salvarPlano('${uid}')" class="flex-1 h-10 rounded-lg bg-purple-600 text-xs font-bold">Salvar</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    },
+
+    async _salvarPlano(uid) {
+        const plano = document.getElementById('novo-plano').value;
+        try {
+            await Api.alterarPlano(uid, plano);
+            Toast.show(`✅ Plano alterado para ${plano}! Push enviado.`, 'success');
+            Views.fecharModal();
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     async _toggleBloqueio(uid, status) {
@@ -633,7 +687,7 @@ const Views = {
     },
 
     // ============================================================
-    // NOTIFICAÇÕES PUSH (COM DROPDOWN DE USUÁRIOS)
+    // NOTIFICAÇÕES PUSH
     // ============================================================
     async notificacoes(c) {
         c.innerHTML = `
@@ -715,7 +769,7 @@ const Views = {
         this._notifTemplate('geral');
     },
 
-    async _loadUsuariosNotif() {
+    async _loadUsuariosNotif(selectedUid = null) {
         const select = document.getElementById('notif-uid');
         select.innerHTML = '<option value="">Carregando...</option>';
         try {
@@ -725,7 +779,7 @@ const Views = {
                 return;
             }
             select.innerHTML = '<option value="">Selecione um usuário...</option>' + 
-                r.items.map(u => `<option value="${esc(u.uid)}">${esc(u.nome)} (${esc(u.email)})</option>`).join('');
+                r.items.map(u => `<option value="${esc(u.uid)}" ${u.uid === selectedUid ? 'selected' : ''}>${esc(u.nome)} (${esc(u.email)})</option>`).join('');
         } catch (e) {
             select.innerHTML = '<option value="">Erro ao carregar</option>';
         }
