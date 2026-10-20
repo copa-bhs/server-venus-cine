@@ -1,6 +1,6 @@
 import os
 import firebase_admin
-from firebase_admin import credentials, firestore, messaging
+from firebase_admin import credentials, firestore, messaging, auth
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -34,7 +34,7 @@ class NotificacaoPayload(BaseModel):
 
 class PedidoConcluidoPayload(BaseModel):
     titulo: str
-    tipo: str # "filme" ou "serie"
+    tipo: str
 
 @router.post("/enviar")
 async def enviar_notificacao(payload: NotificacaoPayload):
@@ -90,6 +90,51 @@ async def listar_historico():
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
 # ==========================================================
+# GESTÃO DE USUÁRIOS (NOVO)
+# ==========================================================
+@router.get("/usuarios")
+async def listar_usuarios():
+    if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
+    try:
+        docs = db_firestore.collection('usuarios').stream()
+        out = []
+        for doc in docs:
+            d = doc.to_dict()
+            out.append({
+                "uid": doc.id,
+                "nome": d.get("nome") or d.get("displayName") or "Sem Nome",
+                "email": d.get("email") or "Sem Email",
+                "foto": d.get("foto") or d.get("photoURL") or "",
+                "bloqueado": d.get("bloqueado", False)
+            })
+        # Ordena por nome
+        out.sort(key=lambda x: x["nome"].lower())
+        return {"ok": True, "items": out}
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+
+@router.post("/usuarios/{uid}/bloquear")
+async def bloquear_usuario(uid: str, bloqueado: bool = True):
+    if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
+    try:
+        # Bloqueia/Desbloqueia no Firebase Auth
+        auth.update_user(uid, disabled=bloqueado)
+        # Atualiza no Firestore para o App ler rápido
+        db_firestore.collection('usuarios').document(uid).update({'bloqueado': bloqueado})
+        return {"ok": True}
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+
+@router.delete("/usuarios/{uid}")
+async def deletar_usuario(uid: str):
+    if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
+    try:
+        # Deleta do Firebase Auth
+        auth.delete_user(uid)
+        # Deleta do Firestore
+        db_firestore.collection('usuarios').document(uid).delete()
+        return {"ok": True}
+    except Exception as e: raise HTTPException(500, f"Erro: {e}")
+
+# ==========================================================
 # PEDIDOS DE CONTEÚDO
 # ==========================================================
 @router.get("/pedidos")
@@ -113,74 +158,49 @@ async def listar_pedidos():
 async def concluir_pedido(pedido_id: str, payload: PedidoConcluidoPayload, db: Session = Depends(get_db)):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # 1. Busca o pedido no Firestore para pegar o UID e o Nome
         doc_ref = db_firestore.collection('pedidos_conteudo').document(pedido_id)
         doc = doc_ref.get()
         
-        if not doc.exists:
-            raise HTTPException(404, "Pedido não encontrado")
+        if not doc.exists: raise HTTPException(404, "Pedido não encontrado")
             
         d = doc.to_dict()
         uid = d.get('solicitanteUid')
         nome = d.get('solicitanteNome', 'Usuário')
         
-        if not uid:
-            raise HTTPException(400, "Este pedido não tem UID de usuário. Não é possível notificar.")
+        if not uid: raise HTTPException(400, "Pedido sem UID.")
 
-        # 2. Busca o item no nosso banco SQLite para pegar o ID correto e a Capa
         item_id = None
         capa_url = d.get('capa', '')
         
         if payload.tipo == "serie":
             item_db = db.query(SerieDB).filter(SerieDB.titulo == payload.titulo).first()
-            if item_db:
-                item_id = str(item_db.iptv_id)
-                capa_url = item_db.capa or capa_url
+            if item_db: item_id = str(item_db.iptv_id); capa_url = item_db.capa or capa_url
         else:
             item_db = db.query(FilmeDB).filter(FilmeDB.titulo == payload.titulo).first()
-            if item_db:
-                item_id = str(item_db.iptv_id)
-                capa_url = item_db.capa or capa_url
+            if item_db: item_id = str(item_db.iptv_id); capa_url = item_db.capa or capa_url
 
-        if not item_id:
-            item_id = d.get('id_iptv', '') # Fallback
+        if not item_id: item_id = d.get('id_iptv', '')
 
-        # 3. Atualiza o status no Firestore
         doc_ref.update({'status': 'concluido'})
         
         tipo_str = "Série" if payload.tipo == "serie" else "Filme"
         msg_titulo = "Pedido Aprovado! 🎉"
         msg_corpo = f"Obrigado {nome}! O {tipo_str} '{payload.titulo}' que você pediu foi adicionado ao catálogo e marcado com o seu nome no perfil."
         
-        # 4. ⚡ SALVA NA TELA DE NOTIFICAÇÕES IN-APP DO APP (Firestore)
         doc_notif = db_firestore.collection('notificacoes').document()
         doc_notif.set({
-            'title': msg_titulo,
-            'body': msg_corpo,
-            'type': 'lancamento', # Avisa o app para abrir o card
-            'targetUid': uid,     # Apenas este usuário verá
-            'itemId': item_id,    # ID para abrir o filme
-            'itemType': payload.tipo,
-            'imageUrl': capa_url,
-            'createdAt': firestore.SERVER_TIMESTAMP,
-            'readBy': [],
-            'deletedBy': []
+            'title': msg_titulo, 'body': msg_corpo, 'type': 'lancamento',
+            'targetUid': uid, 'itemId': item_id, 'itemType': payload.tipo,
+            'imageUrl': capa_url, 'createdAt': firestore.SERVER_TIMESTAMP,
+            'readBy': [], 'deletedBy': []
         })
         
-        # 5. ⚡ ENVIA O PUSH NOTIFICATION (FCM) APENAS PARA O UID DO SOLICITANTE
         tokens = [t.id for t in db_firestore.collection('usuarios').document(uid).collection('fcm_tokens').stream()]
-        
         if tokens:
             msg = messaging.MulticastMessage(
                 notification=messaging.Notification(title=msg_titulo, body=msg_corpo, image=capa_url if capa_url else None),
-                data={
-                    'type': 'lancamento',
-                    'itemId': item_id,
-                    'itemType': payload.tipo,
-                    'imageUrl': capa_url or ''
-                },
-                tokens=tokens,
-                android=messaging.AndroidConfig(priority='high')
+                data={'type': 'lancamento', 'itemId': item_id, 'itemType': payload.tipo, 'imageUrl': capa_url or ''},
+                tokens=tokens, android=messaging.AndroidConfig(priority='high')
             )
             messaging.send_each_for_multicast(msg)
                     

@@ -45,6 +45,7 @@
         <nav class="flex-1 py-3 overflow-y-auto">
             <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
             <a href="#pedidos" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="pedidos"><i class="fa-solid fa-inbox w-4 text-center"></i> Pedidos <span id="badge-pedidos" class="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold hidden">0</span></a>
+            <a href="#usuarios" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="usuarios"><i class="fa-solid fa-users w-4 text-center"></i> Usuários</a>
             <a href="#iptv" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="iptv"><i class="fa-solid fa-magnifying-glass w-4 text-center"></i> IPTV Direto</a>
             <a href="#notificacoes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="notificacoes"><i class="fa-solid fa-bell w-4 text-center"></i> Notificações</a>
             <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
@@ -199,7 +200,11 @@ const Api = {
     iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload),
     iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items }),
     iptvImportarLoteBg: (tipo, qtd) => Api.post(`/admin/iptv/importar-lote-bg?tipo=${tipo}&quantidade=${qtd}`),
-    iptvImportarLoteBgStatus: () => Api.get('/admin/iptv/importar-lote-bg/status')
+    iptvImportarLoteBgStatus: () => Api.get('/admin/iptv/importar-lote-bg/status'),
+    // Users API
+    usuarios() { return this.get('/admin/notificacoes/usuarios'); },
+    bloquearUsuario(uid, status) { return this.post(`/admin/notificacoes/usuarios/${uid}/bloquear?bloqueado=${status}`); },
+    deletarUsuario(uid) { return this.del(`/admin/notificacoes/usuarios/${uid}`); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -221,7 +226,8 @@ const Router = {
         this.current = h;
         document.querySelectorAll('.sidebar-link').forEach(a => { a.classList.toggle('active', a.dataset.route === h); });
         const titles = {
-            dashboard: 'Dashboard', pedidos: 'Pedidos de Conteúdo', iptv: 'IPTV Direto (Adicionar Manual)',
+            dashboard: 'Dashboard', pedidos: 'Pedidos de Conteúdo', usuarios: 'Gestão de Usuários',
+            iptv: 'IPTV Direto (Adicionar Manual)',
             notificacoes: 'Notificações Push', slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
             proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
@@ -238,6 +244,7 @@ const Router = {
         try {
             if (this.current === 'dashboard') await Views.dashboard(c);
             else if (this.current === 'pedidos') await Views.pedidos(c);
+            else if (this.current === 'usuarios') await Views.usuarios(c);
             else if (this.current === 'iptv') await Views.buscaIptv(c);
             else if (this.current === 'notificacoes') await Views.notificacoes(c);
             else if (this.current === 'slider') await Views.slider(c);
@@ -287,6 +294,74 @@ const Views = {
             document.getElementById('btn-wipe-all').innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Limpando...';
             Actions.pollSync();
         }
+    },
+
+    // ============================================================
+    // USUÁRIOS (NOVO)
+    // ============================================================
+    async usuarios(c) {
+        const data = await Api.usuarios().catch(() => ({ items: [] }));
+        const itens = data.items || [];
+
+        c.innerHTML = `
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-xl font-black">👥 Gestão de Usuários</h2>
+                    <p class="text-xs text-gray-500 mt-1">Gerencie quem tem acesso ao aplicativo.</p>
+                </div>
+                <button onclick="Router.render()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold flex items-center gap-2"><i class="fa-solid fa-rotate"></i> Atualizar</button>
+            </div>
+
+            ${itens.length === 0 ? `
+                <div class="stat-card rounded-xl p-12 text-center">
+                    <i class="fa-solid fa-users-slash text-5xl text-gray-600 mb-4"></i>
+                    <h3 class="text-lg font-bold mb-2">Nenhum usuário encontrado</h3>
+                    <p class="text-xs text-gray-500">Os usuários aparecerão aqui quando se cadastrarem no app.</p>
+                </div>
+            ` : `
+                <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${itens.map(u => `
+                        <div class="stat-card rounded-xl p-4 flex flex-col border-[#333] ${u.bloqueado ? 'opacity-60 border-red-600/50' : ''}">
+                            <div class="flex items-center gap-3 mb-3">
+                                ${u.foto ? `<img src="${esc(u.foto)}" class="w-12 h-12 rounded-full object-cover">` : `<div class="w-12 h-12 rounded-full bg-gray-800 flex items-center justify-center text-lg font-bold text-gray-500">${esc(u.nome.charAt(0))}</div>`}
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-sm font-bold text-white truncate">${esc(u.nome)}</div>
+                                    <div class="text-[10px] text-gray-400 truncate">${esc(u.email)}</div>
+                                </div>
+                            </div>
+                            <div class="text-[9px] font-mono text-gray-600 truncate mb-3">UID: ${esc(u.uid)}</div>
+                            
+                            <div class="flex gap-2 mt-auto">
+                                ${u.bloqueado 
+                                    ? `<button onclick="Views._toggleBloqueio('${u.uid}', false)" class="flex-1 h-8 rounded bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white text-xs font-bold transition"><i class="fa-solid fa-lock-open mr-1"></i> Desbloquear</button>`
+                                    : `<button onclick="Views._toggleBloqueio('${u.uid}', true)" class="flex-1 h-8 rounded bg-orange-600/20 hover:bg-orange-600 text-orange-400 hover:text-white text-xs font-bold transition"><i class="fa-solid fa-ban mr-1"></i> Bloquear</button>`
+                                }
+                                <button onclick="Views._deletarUsuario('${u.uid}', '${esc(u.nome)}')" class="w-8 h-8 rounded bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white" title="Excluir"><i class="fa-solid fa-trash"></i></button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `}
+        `;
+    },
+
+    async _toggleBloqueio(uid, status) {
+        const acao = status ? 'bloquear' : 'desbloquear';
+        if (!confirm(`Tem certeza que deseja ${acao} este usuário?`)) return;
+        try {
+            await Api.bloquearUsuario(uid, status);
+            Toast.show(`✅ Usuário ${status ? 'bloqueado' : 'desbloqueado'}!`, 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
+    },
+
+    async _deletarUsuario(uid, nome) {
+        if (!confirm(`⚠️ CUIDADO: Isso vai excluir a conta de "${nome}" permanentemente do Firebase.\n\nTem certeza?`)) return;
+        try {
+            await Api.deletarUsuario(uid);
+            Toast.show('🗑️ Usuário excluído com sucesso!', 'success');
+            Router.render();
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     // ============================================================
@@ -341,19 +416,16 @@ const Views = {
 
     async _concluirPedido(id, titulo, tipo) {
         if (!confirm(`Marcar o pedido de "${titulo}" como concluído?\n\nO usuário receberá uma notificação de agradecimento.`)) return;
-        
         try {
             const payload = { titulo: titulo, tipo: tipo };
             await Api.concluirPedido(id, payload);
             Toast.show('✅ Pedido concluído e usuário notificado!', 'success');
             Router.render();
-        } catch (e) { 
-            Toast.show('Erro: ' + e.message, 'error'); 
-        }
+        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
     // ============================================================
-    // IPTV DIRETO (IMPOTAR LOTE + BUSCA MANUAL)
+    // IPTV DIRETO
     // ============================================================
     async buscaIptv(c) {
         c.innerHTML = `
@@ -561,7 +633,7 @@ const Views = {
     },
 
     // ============================================================
-    // NOTIFICAÇÕES PUSH
+    // NOTIFICAÇÕES PUSH (COM DROPDOWN DE USUÁRIOS)
     // ============================================================
     async notificacoes(c) {
         c.innerHTML = `
@@ -594,10 +666,21 @@ const Views = {
                                 <input type="hidden" id="notif-item-id" value=""><input type="hidden" id="notif-item-type" value="">
                             </div>
                             <div class="grid grid-cols-2 gap-3">
-                                <div><label class="text-xs text-gray-400 block mb-1">Destinatário</label><select id="notif-target" class="input-dark" onchange="document.getElementById('notif-uid-area').classList.toggle('hidden', this.value !== 'specific')"><option value="all">Todos os usuários</option><option value="specific">Usuário específico</option></select></div>
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-1">Destinatário</label>
+                                    <select id="notif-target" class="input-dark" onchange="document.getElementById('notif-user-area').classList.toggle('hidden', this.value !== 'specific'); if(this.value==='specific') Views._loadUsuariosNotif()">
+                                        <option value="all">Todos os usuários</option>
+                                        <option value="specific">Usuário específico</option>
+                                    </select>
+                                </div>
                                 <div><label class="text-xs text-gray-400 block mb-1">Tipo Base</label><select id="notif-type" class="input-dark"><option value="geral">Geral</option><option value="lancamento">Lançamento</option></select></div>
                             </div>
-                            <div id="notif-uid-area" class="hidden"><label class="text-xs text-gray-400 block mb-1">UID do Usuário</label><input id="notif-uid" class="input-dark" placeholder="Cole o UID do Firebase"></div>
+                            <div id="notif-user-area" class="hidden">
+                                <label class="text-xs text-gray-400 block mb-1">Selecione o Usuário</label>
+                                <select id="notif-uid" class="input-dark">
+                                    <option value="">Carregando usuários...</option>
+                                </select>
+                            </div>
                             <button type="submit" id="btn-notif" class="w-full h-11 rounded-lg bg-red-600 hover:bg-red-700 text-sm font-bold flex items-center justify-center gap-2 mt-4"><i class="fa-solid fa-rocket"></i> Disparar Notificação</button>
                         </form>
                     </div>
@@ -630,6 +713,22 @@ const Views = {
             if (e.target.value) { img.src = e.target.value; box.classList.remove('hidden'); icon.classList.add('hidden'); } else { box.classList.add('hidden'); icon.classList.remove('hidden'); }
         };
         this._notifTemplate('geral');
+    },
+
+    async _loadUsuariosNotif() {
+        const select = document.getElementById('notif-uid');
+        select.innerHTML = '<option value="">Carregando...</option>';
+        try {
+            const r = await Api.usuarios();
+            if (!r.items || r.items.length === 0) {
+                select.innerHTML = '<option value="">Nenhum usuário cadastrado</option>';
+                return;
+            }
+            select.innerHTML = '<option value="">Selecione um usuário...</option>' + 
+                r.items.map(u => `<option value="${esc(u.uid)}">${esc(u.nome)} (${esc(u.email)})</option>`).join('');
+        } catch (e) {
+            select.innerHTML = '<option value="">Erro ao carregar</option>';
+        }
     },
 
     _notifTemplate(tipo) {
@@ -674,7 +773,16 @@ const Views = {
 
     async _enviarNotif(ev) {
         ev.preventDefault(); const btn = document.getElementById('btn-notif'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
-        const payload = { title: document.getElementById('notif-title').value, body: document.getElementById('notif-body').value, imageUrl: document.getElementById('notif-image').value, type: document.getElementById('notif-type').value, target: document.getElementById('notif-target').value, uid: document.getElementById('notif-uid').value || null, itemId: document.getElementById('notif-item-id').value || null, itemType: document.getElementById('notif-item-type').value || null };
+        const uid = document.getElementById('notif-uid').value;
+        const target = document.getElementById('notif-target').value;
+        
+        if (target === 'specific' && !uid) {
+            Toast.show('Selecione um usuário', 'warn');
+            btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rocket"></i> Disparar Notificação';
+            return;
+        }
+
+        const payload = { title: document.getElementById('notif-title').value, body: document.getElementById('notif-body').value, imageUrl: document.getElementById('notif-image').value, type: document.getElementById('notif-type').value, target: target, uid: uid || null, itemId: document.getElementById('notif-item-id').value || null, itemType: document.getElementById('notif-item-type').value || null };
         try {
             const r = await Api.notifEnviar(payload);
             if (!r.ok) throw new Error(r.msg || 'Erro ao enviar');
