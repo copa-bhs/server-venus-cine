@@ -415,3 +415,157 @@ async def _importar_lote_bg(tipo: str, quantidade: int):
     finally:
         db.close()
         _IMPORT_ATIVO = False
+
+@app.post("/admin/iptv/importar-lote-bg")
+async def importar_lote_bg(tipo: str = Query(...), quantidade: int = Query(...)):
+    global _IMPORT_ATIVO
+    if _IMPORT_ATIVO: return {"ok": False, "msg": "Já existe uma importação em andamento."}
+    asyncio.create_task(_importar_lote_bg(tipo, quantidade))
+    return {"ok": True, "msg": "Importação iniciada."}
+
+@app.get("/admin/iptv/importar-lote-bg/status")
+async def importar_lote_bg_status():
+    return {"ativo": _IMPORT_ATIVO, "logs": _IMPORT_LOGS, "stats": _stats()}
+
+# ==========================================================
+# LIMPEZA E SLIDER
+# ==========================================================
+async def _wipe_all_bg():
+    global _SYNC_ATIVO, _FILMES, _SERIES, _CANAIS
+    _SYNC_ATIVO = True
+    for f in [FILMES_FILE, SERIES_FILE, CANAIS_FILE, META_FILE, NOVIDADES_FILE]:
+        if f.exists(): f.unlink()
+    for f in CACHE_DIR.glob("slug_map_*.json"): f.unlink()
+    if (CACHE_DIR / "hero_cache.json").exists(): (CACHE_DIR / "hero_cache.json").unlink()
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    _FILMES.clear(); _SERIES.clear(); _CANAIS.clear(); limpar_proxy()
+    await manager.broadcast("catalogo_sincronizado", _stats())
+    _SYNC_ATIVO = False
+
+@app.post("/admin/wipe-all")
+async def wipe_all():
+    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde."}
+    asyncio.create_task(_wipe_all_bg())
+    return {"ok": True}
+
+@app.get("/admin/force-sync/status")
+async def force_sync_status():
+    return {"ativo": _SYNC_ATIVO, "stats": _stats(), "logs": _SYNC_LOGS}
+
+@app.get("/admin/slider")
+def admin_slider_listar(db: Session = Depends(get_db)):
+    slides = db.query(SlideDB).order_by(SlideDB.ordem).all(); out = []
+    for s in slides:
+        ref = None
+        if s.ref_tipo == "filme":
+            r = db.query(FilmeDB).get(s.ref_id); ref = {"titulo": r.titulo, "capa": r.capa, "ano": r.ano} if r else None
+        elif s.ref_tipo == "serie":
+            r = db.query(SerieDB).get(s.ref_id); ref = {"titulo": r.titulo, "capa": r.capa, "ano": r.ano} if r else None
+        out.append({"id": s.id, "ordem": s.ordem, "ref_tipo": s.ref_tipo, "ref_id": s.ref_id, "titulo": s.titulo or (ref["titulo"] if ref else "?"), "banner": s.banner or (ref.get("capa") if ref else None), "logo": s.logo, "sinopse": s.sinopse, "ref": ref, "ativo": s.ativo})
+    return {"total": len(out), "items": out}
+
+@app.post("/admin/slider")
+async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(...), db: Session = Depends(get_db)):
+    global _HOME_CACHE_TS, _FILMES, _SERIES
+    item_db = None
+    if ref_tipo == "filme":
+        item_db = db.query(FilmeDB).filter(FilmeDB.iptv_id == ref_id).first()
+        if not item_db:
+            mem_item = next((x for x in _FILMES if str(x.get("id")) == str(ref_id)), None)
+            if mem_item:
+                item_db = FilmeDB(iptv_id=ref_id, titulo=mem_item.get("titulo"), capa=mem_item.get("capa"), ano=mem_item.get("ano"), categoria=mem_item.get("categoria"), url=mem_item.get("url") or "")
+                db.add(item_db); db.commit(); db.refresh(item_db)
+    elif ref_tipo == "serie":
+        item_db = db.query(SerieDB).filter(SerieDB.iptv_id == ref_id).first()
+        if not item_db:
+            mem_item = next((x for x in _SERIES if str(x.get("id")) == str(ref_id)), None)
+            if mem_item:
+                item_db = SerieDB(iptv_id=ref_id, titulo=mem_item.get("titulo"), capa=mem_item.get("capa"), ano=mem_item.get("ano"), categoria=mem_item.get("categoria"))
+                db.add(item_db); db.commit(); db.refresh(item_db)
+
+    if not item_db: raise HTTPException(404, "Item não encontrado no banco nem na memória.")
+    ultimo = db.query(SlideDB).order_by(SlideDB.ordem.desc()).first(); proxima = (ultimo.ordem + 1) if ultimo else 0
+    novo = SlideDB(ordem=proxima, ref_tipo=ref_tipo, ref_id=item_db.id, ativo=True)
+    db.add(novo); db.commit(); db.refresh(novo); _HOME_CACHE_TS = 0
+    await manager.broadcast("slider_atualizado", {"acao": "adicionar", "id": novo.id})
+    return {"ok": True, "id": novo.id}
+
+@app.put("/admin/slider/{slide_id}")
+async def admin_slider_editar(slide_id: int, titulo: Optional[str] = Form(None), banner: Optional[str] = Form(None), logo: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    global _HOME_CACHE_TS
+    s = db.query(SlideDB).get(slide_id)
+    if not s: raise HTTPException(404, "não encontrado")
+    if titulo is not None: s.titulo = titulo or None
+    if banner is not None: s.banner = banner or None
+    if logo is not None: s.logo = logo or None
+    if sinopse is not None: s.sinopse = sinopse or None
+    db.commit(); _HOME_CACHE_TS = 0
+    await manager.broadcast("slider_atualizado", {"acao": "editar", "id": slide_id})
+    return {"ok": True}
+
+@app.delete("/admin/slider/{slide_id}")
+async def admin_slider_remover(slide_id: int, db: Session = Depends(get_db)):
+    global _HOME_CACHE_TS
+    s = db.query(SlideDB).get(slide_id)
+    if not s: raise HTTPException(404, "não encontrado")
+    db.delete(s); db.commit(); _HOME_CACHE_TS = 0
+    await manager.broadcast("slider_atualizado", {"acao": "remover", "id": slide_id})
+    return {"ok": True}
+
+@app.post("/admin/slider/reordenar")
+async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(get_db)):
+    global _HOME_CACHE_TS
+    try: ids = [int(x.strip()) for x in ordem.split(",") if x.strip()]
+    except: raise HTTPException(400, "inválido")
+    for i, sid in enumerate(ids):
+        s = db.query(SlideDB).get(sid)
+        if s: s.ordem = i
+    db.commit(); _HOME_CACHE_TS = 0
+    await manager.broadcast("slider_atualizado", {"acao": "reordenar"})
+    return {"ok": True}
+
+# ==========================================================
+# PROXY STREAM E FINAL DO ARQUIVO
+# ==========================================================
+_EPISODIO_RE = re.compile(r'^(.+?)-t(\d+)-e(\d+)$')
+
+async def _resolver_episodio_sob_demanda(slug: str):
+    m = _EPISODIO_RE.match(slug)
+    if not m: return None
+    base = m.group(1); serie_encontrada = None
+    for s in _SERIES:
+        if _slugify(s.get("titulo") or "") == base: serie_encontrada = s; break
+    if not serie_encontrada: return None
+    serie_id = str(serie_encontrada.get("id") or "")
+    if not serie_id: return None
+    try: await fetch_series_info(serie_id)
+    except: return None
+    return get_by_slug(slug)
+
+@app.get("/stream/id/{item_id}")
+async def proxy_por_id(item_id: str, request: Request):
+    cid = item_id
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov"):
+        if cid.lower().endswith(ext): cid = cid[:-len(ext)]; break
+    item = get_by_id(cid)
+    if not item: raise HTTPException(404, "não encontrado")
+    return await stream_proxy(item["url"], request)
+
+@app.get("/stream/{slug_path:path}")
+async def proxy_por_slug(slug_path: str, request: Request):
+    slug = slug_path
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8", ".avi", ".mov", ".flv", ".webm"):
+        if slug.lower().endswith(ext): slug = slug[:-len(ext)]; break
+    item = get_by_slug(slug)
+    if not item: item = await _resolver_episodio_sob_demanda(slug)
+    if not item: raise HTTPException(404, "não encontrado")
+    return await stream_proxy(item["url"], request)
+
+@app.get("/proxy/stats")
+def proxy_monitor():
+    return {"slugs_carregados": total_slugs(), **proxy_stats()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False)
