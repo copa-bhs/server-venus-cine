@@ -20,7 +20,16 @@ from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
 app = FastAPI(title="IPTV Organizer Pro", version="12.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ⚡ 3. Middleware CORS global (para capas, banners, APIs)
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_methods=["*"], 
+    allow_headers=["*"], 
+    expose_headers=["*"] # O * aqui libera o Content-Length para o Canvas
+)
+
 app.include_router(notificacoes_router)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
