@@ -46,7 +46,6 @@
             <a href="#dashboard" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="dashboard"><i class="fa-solid fa-gauge w-4 text-center"></i> Dashboard</a>
             <a href="#pedidos" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="pedidos"><i class="fa-solid fa-inbox w-4 text-center"></i> Pedidos <span id="badge-pedidos" class="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-red-600 text-white font-bold hidden">0</span></a>
             <a href="#usuarios" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="usuarios"><i class="fa-solid fa-users w-4 text-center"></i> Usuários</a>
-            <a href="#manual" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="manual"><i class="fa-solid fa-upload w-4 text-center"></i> Upload Manual</a>
             <a href="#iptv" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="iptv"><i class="fa-solid fa-magnifying-glass w-4 text-center"></i> IPTV Direto</a>
             <a href="#notificacoes" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="notificacoes"><i class="fa-solid fa-bell w-4 text-center"></i> Notificações</a>
             <a href="#slider" class="sidebar-link flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 border-l-[3px] border-transparent" data-route="slider"><i class="fa-solid fa-images w-4 text-center"></i> Slider</a>
@@ -97,7 +96,6 @@
 <script>
 const API = '';
 window._pedidoAtual = null;
-window._serieManualId = null; // Guarda o ID da série que acabou de ser criada
 
 let WS = null;
 let WS_RECONNECT_TIMER = null;
@@ -180,11 +178,6 @@ const Api = {
         if (!r.ok) { const erro = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); throw new Error(erro.detail || `HTTP ${r.status}`); }
         return await r.json();
     },
-    async postForm(path, formData) {
-        const r = await fetch(API + path, { method: 'POST', body: formData });
-        if (!r.ok) { const erro = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); throw new Error(erro.detail || `HTTP ${r.status}`); }
-        return await r.json();
-    },
     async del(path) {
         const r = await fetch(API + path, { method: 'DELETE' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -208,13 +201,11 @@ const Api = {
     iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items }),
     iptvImportarLoteBg: (tipo, qtd) => Api.post(`/admin/iptv/importar-lote-bg?tipo=${tipo}&quantidade=${qtd}`),
     iptvImportarLoteBgStatus: () => Api.get('/admin/iptv/importar-lote-bg/status'),
+    // Users API
     usuarios() { return this.get('/admin/notificacoes/usuarios'); },
     bloquearUsuario(uid, status) { return this.post(`/admin/notificacoes/usuarios/${uid}/bloquear?bloqueado=${status}`); },
     deletarUsuario(uid) { return this.del(`/admin/notificacoes/usuarios/${uid}`); },
-    alterarPlano(uid, plano) { return this.post(`/admin/notificacoes/usuarios/${uid}/alterar-plano`, { plano }); },
-    uploadManualFilme: (formData) => Api.postForm('/admin/manual/filme', formData),
-    uploadManualSerie: (formData) => Api.postForm('/admin/manual/serie', formData),
-    uploadManualEpisodio: (dbId, formData) => Api.postForm(`/admin/manual/serie/${dbId}/episodio`, formData)
+    alterarPlano(uid, plano) { return this.post(`/admin/notificacoes/usuarios/${uid}/alterar-plano`, { plano }); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -237,7 +228,7 @@ const Router = {
         document.querySelectorAll('.sidebar-link').forEach(a => { a.classList.toggle('active', a.dataset.route === h); });
         const titles = {
             dashboard: 'Dashboard', pedidos: 'Pedidos de Conteúdo', usuarios: 'Gestão de Usuários',
-            manual: 'Upload Manual', iptv: 'IPTV Direto (Adicionar Manual)',
+            iptv: 'IPTV Direto (Adicionar Manual)',
             notificacoes: 'Notificações Push', slider: 'Slider (Hero)', filmes: 'Filmes', series: 'Séries', canais: 'Canais',
             proxy: 'Proxy de Streaming', sistema: 'Sistema'
         };
@@ -255,7 +246,6 @@ const Router = {
             if (this.current === 'dashboard') await Views.dashboard(c);
             else if (this.current === 'pedidos') await Views.pedidos(c);
             else if (this.current === 'usuarios') await Views.usuarios(c);
-            else if (this.current === 'manual') await Views.manual(c);
             else if (this.current === 'iptv') await Views.buscaIptv(c);
             else if (this.current === 'notificacoes') await Views.notificacoes(c);
             else if (this.current === 'slider') await Views.slider(c);
@@ -308,114 +298,7 @@ const Views = {
     },
 
     // ============================================================
-    // UPLOAD MANUAL (NOVO)
-    // ============================================================
-    async manual(c) {
-        c.innerHTML = `
-            <div class="grid md:grid-cols-2 gap-6">
-                <!-- FILME MANUAL -->
-                <div class="stat-card rounded-xl p-5 border-blue-500/30">
-                    <h2 class="text-sm font-bold text-white mb-4"><i class="fa-solid fa-film text-blue-400 mr-2"></i> Adicionar Filme Manual</h2>
-                    <form id="form-manual-filme" onsubmit="Views._salvarManualFilme(event)" class="space-y-3">
-                        <div><label class="text-xs text-gray-400 block mb-1">Título *</label><input name="titulo" class="input-dark" required></div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div><label class="text-xs text-gray-400 block mb-1">Ano</label><input name="ano" type="number" class="input-dark"></div>
-                            <div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" class="input-dark" value="Manual"></div>
-                        </div>
-                        <div><label class="text-xs text-gray-400 block mb-1">URL do Vídeo (.mp4, .mkv) *</label><input name="url" class="input-dark font-mono text-xs" required placeholder="https://..."></div>
-                        <div><label class="text-xs text-gray-400 block mb-1">Sinopse</label><textarea name="sinopse" rows="2" class="input-dark"></textarea></div>
-                        <div class="grid grid-cols-3 gap-2">
-                            <label class="text-[10px] text-gray-500">Capa<input name="capa" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                            <label class="text-[10px] text-gray-500">Banner<input name="banner" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                            <label class="text-[10px] text-gray-500">Logo<input name="logo" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                        </div>
-                        <button type="submit" class="w-full h-10 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-bold mt-2">Salvar Filme</button>
-                    </form>
-                </div>
-
-                <!-- SÉRIE MANUAL -->
-                <div class="space-y-4">
-                    <div class="stat-card rounded-xl p-5 border-purple-500/30">
-                        <h2 class="text-sm font-bold text-white mb-4"><i class="fa-solid fa-tv text-purple-400 mr-2"></i> Adicionar Série Manual</h2>
-                        <form id="form-manual-serie" onsubmit="Views._salvarManualSerie(event)" class="space-y-3">
-                            <div><label class="text-xs text-gray-400 block mb-1">Título da Série *</label><input name="titulo" class="input-dark" required></div>
-                            <div class="grid grid-cols-2 gap-3">
-                                <div><label class="text-xs text-gray-400 block mb-1">Ano</label><input name="ano" type="number" class="input-dark"></div>
-                                <div><label class="text-xs text-gray-400 block mb-1">Categoria</label><input name="categoria" class="input-dark" value="Manual"></div>
-                            </div>
-                            <div><label class="text-xs text-gray-400 block mb-1">Sinopse</label><textarea name="sinopse" rows="2" class="input-dark"></textarea></div>
-                            <div class="grid grid-cols-3 gap-2">
-                                <label class="text-[10px] text-gray-500">Capa<input name="capa" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                                <label class="text-[10px] text-gray-500">Banner<input name="banner" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                                <label class="text-[10px] text-gray-500">Logo<input name="logo" type="file" accept="image/*" class="mt-1 w-full text-[10px]"></label>
-                            </div>
-                            <button type="submit" class="w-full h-10 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold mt-2">Criar Série</button>
-                        </form>
-                    </div>
-
-                    <!-- EPISÓDIOS (Só aparece se a série foi criada) -->
-                    <div id="episodios-area" class="stat-card rounded-xl p-5 border-green-500/30 hidden">
-                        <div class="flex justify-between items-center mb-4">
-                            <h2 class="text-sm font-bold text-white"><i class="fa-solid fa-layer-group text-green-400 mr-2"></i> Adicionar Episódios</h2>
-                            <span class="text-xs text-green-400 font-bold" id="serie-atual-nome"></span>
-                        </div>
-                        <form id="form-manual-episodio" onsubmit="Views._salvarManualEpisodio(event)" class="space-y-3">
-                            <div class="grid grid-cols-2 gap-3">
-                                <div><label class="text-xs text-gray-400 block mb-1">Temporada *</label><input name="temporada" type="number" class="input-dark" required value="1"></div>
-                                <div><label class="text-xs text-gray-400 block mb-1">Episódio *</label><input name="episodio" type="number" class="input-dark" required value="1"></div>
-                            </div>
-                            <div><label class="text-xs text-gray-400 block mb-1">Título do Episódio *</label><input name="titulo" class="input-dark" required></div>
-                            <div><label class="text-xs text-gray-400 block mb-1">URL do Vídeo *</label><input name="url" class="input-dark font-mono text-xs" required placeholder="https://..."></div>
-                            <button type="submit" class="w-full h-10 rounded-lg bg-green-600 hover:bg-green-700 text-xs font-bold mt-2">Adicionar Episódio</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        `;
-    },
-
-    async _salvarManualFilme(ev) {
-        ev.preventDefault();
-        const form = ev.target;
-        const fd = new FormData(form);
-        try {
-            await Api.uploadManualFilme(fd);
-            Toast.show('✅ Filme adicionado com sucesso!', 'success');
-            form.reset();
-            pollStatus();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
-    },
-
-    async _salvarManualSerie(ev) {
-        ev.preventDefault();
-        const form = ev.target;
-        const fd = new FormData(form);
-        try {
-            const r = await Api.uploadManualSerie(fd);
-            Toast.show('✅ Série criada! Agora adicione os episódios.', 'success');
-            window._serieManualId = r.db_id;
-            document.getElementById('episodios-area').classList.remove('hidden');
-            document.getElementById('serie-atual-nome').textContent = form.querySelector('[name="titulo"]').value;
-            form.reset();
-            pollStatus();
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
-    },
-
-    async _salvarManualEpisodio(ev) {
-        ev.preventDefault();
-        if (!window._serieManualId) return;
-        const form = ev.target;
-        const fd = new FormData(form);
-        try {
-            await Api.uploadManualEpisodio(window._serieManualId, fd);
-            Toast.show('✅ Episódio adicionado!', 'success');
-            form.reset();
-            form.querySelector('[name="episodio"]').value = parseInt(form.querySelector('[name="episodio"]').value || 1) + 1; // Auto incrementa
-        } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
-    },
-
-    // ============================================================
-    // USUÁRIOS
+    // USUÁRIOS (COM PLANO E NOTIFICAÇÃO RÁPIDA)
     // ============================================================
     async usuarios(c) {
         const data = await Api.usuarios().catch(() => ({ items: [] }));
