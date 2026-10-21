@@ -5,7 +5,6 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
-
 from db import get_db, Filme as FilmeDB, Serie as SerieDB
 
 router = APIRouter(prefix="/admin/notificacoes", tags=["notificações"])
@@ -35,9 +34,6 @@ class NotificacaoPayload(BaseModel):
 class PedidoConcluidoPayload(BaseModel):
     titulo: str
     tipo: str
-
-class AlterarPlanoPayload(BaseModel):
-    plano: str
 
 @router.post("/enviar")
 async def enviar_notificacao(payload: NotificacaoPayload):
@@ -92,9 +88,6 @@ async def listar_historico():
         return {"ok": True, "items": historico}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
-# ==========================================================
-# GESTÃO DE USUÁRIOS
-# ==========================================================
 @router.get("/usuarios")
 async def listar_usuarios():
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
@@ -109,7 +102,7 @@ async def listar_usuarios():
                 "email": d.get("email") or "Sem Email",
                 "foto": d.get("foto") or d.get("photoURL") or "",
                 "bloqueado": d.get("bloqueado", False),
-                "plano": d.get("plano", "Grátis") # ⚡ Puxa o plano
+                "plano": d.get("plano", "Grátis")
             })
         out.sort(key=lambda x: x["nome"].lower())
         return {"ok": True, "items": out}
@@ -133,14 +126,15 @@ async def deletar_usuario(uid: str):
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
+class AlterarPlanoPayload(BaseModel):
+    plano: str
+
 @router.post("/usuarios/{uid}/alterar-plano")
 async def alterar_plano(uid: str, payload: AlterarPlanoPayload):
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
     try:
-        # 1. Atualiza o plano no Firestore
         db_firestore.collection('usuarios').document(uid).update({'plano': payload.plano})
         
-        # 2. Dispara a notificação automática de mudança de plano
         msg_titulo = "Seu plano foi atualizado! 🌟"
         msg_corpo = f"Olá! Seu novo plano agora é: {payload.plano}. Aproveite todos os benefícios!"
         
@@ -153,19 +147,14 @@ async def alterar_plano(uid: str, payload: AlterarPlanoPayload):
             )
             messaging.send_each_for_multicast(msg)
             
-        # Salva também na lista de notificações do app
         doc_notif = db_firestore.collection('notificacoes').document()
         doc_notif.set({
             'title': msg_titulo, 'body': msg_corpo, 'type': 'geral', 'targetUid': uid,
             'createdAt': firestore.SERVER_TIMESTAMP, 'readBy': [], 'deletedBy': []
         })
-        
         return {"ok": True}
     except Exception as e: raise HTTPException(500, f"Erro: {e}")
 
-# ==========================================================
-# PEDIDOS DE CONTEÚDO
-# ==========================================================
 @router.get("/pedidos")
 async def listar_pedidos():
     if not db_firestore: raise HTTPException(500, "Firebase não configurado.")
@@ -189,7 +178,6 @@ async def concluir_pedido(pedido_id: str, payload: PedidoConcluidoPayload, db: S
     try:
         doc_ref = db_firestore.collection('pedidos_conteudo').document(pedido_id)
         doc = doc_ref.get()
-        
         if not doc.exists: raise HTTPException(404, "Pedido não encontrado")
             
         d = doc.to_dict()
@@ -198,9 +186,8 @@ async def concluir_pedido(pedido_id: str, payload: PedidoConcluidoPayload, db: S
         
         if not uid: raise HTTPException(400, "Pedido sem UID.")
 
-        item_id = None
+        item_id = d.get('id_iptv', '')
         capa_url = d.get('capa', '')
-        
         if payload.tipo == "serie":
             item_db = db.query(SerieDB).filter(SerieDB.titulo == payload.titulo).first()
             if item_db: item_id = str(item_db.iptv_id); capa_url = item_db.capa or capa_url
@@ -208,13 +195,11 @@ async def concluir_pedido(pedido_id: str, payload: PedidoConcluidoPayload, db: S
             item_db = db.query(FilmeDB).filter(FilmeDB.titulo == payload.titulo).first()
             if item_db: item_id = str(item_db.iptv_id); capa_url = item_db.capa or capa_url
 
-        if not item_id: item_id = d.get('id_iptv', '')
-
         doc_ref.update({'status': 'concluido'})
         
         tipo_str = "Série" if payload.tipo == "serie" else "Filme"
         msg_titulo = "Pedido Aprovado! 🎉"
-        msg_corpo = f"Obrigado {nome}! O {tipo_str} '{payload.titulo}' que você pediu foi adicionado ao catálogo e marcado com o seu nome no perfil."
+        msg_corpo = f"Obrigado {nome}! O {tipo_str} '{payload.titulo}' que você pediu foi adicionado ao catálogo."
         
         doc_notif = db_firestore.collection('notificacoes').document()
         doc_notif.set({
@@ -232,8 +217,7 @@ async def concluir_pedido(pedido_id: str, payload: PedidoConcluidoPayload, db: S
                 tokens=tokens, android=messaging.AndroidConfig(priority='high')
             )
             messaging.send_each_for_multicast(msg)
-                    
         return {"ok": True}
     except Exception as e: 
-        print(f"Erro ao concluir: {e}")
+        print(f"Erro: {e}")
         raise HTTPException(500, f"Erro: {e}")
