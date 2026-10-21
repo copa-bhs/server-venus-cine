@@ -26,7 +26,6 @@
     .template-btn:hover { border-color: #E50914; color: #fff; background: #222; }
     .template-btn.active { background: rgba(229,9,20,0.1); border-color: #E50914; color: #E50914; }
     .custom-checkbox { width: 20px; height: 20px; accent-color: #22c55e; cursor: pointer; }
-    .server-btn.active { background: #E50914; border-color: #E50914; color: white; }
 </style>
 </head>
 <body>
@@ -98,7 +97,7 @@
 <script>
 const API = '';
 window._pedidoAtual = null;
-window._serieManualId = null;
+window._serieManualId = null; // Guarda o ID da série que acabou de ser criada
 
 let WS = null;
 let WS_RECONNECT_TIMER = null;
@@ -204,10 +203,10 @@ const Api = {
     concluirPedido(id, payload) { return this.post(`/admin/notificacoes/pedidos/${id}/concluir`, payload); },
     wipeAll() { return this.post('/admin/wipe-all'); },
     forceSyncStatus() { return this.get('/admin/force-sync/status'); },
-    iptvBuscar: (q, tipo, servidor) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}&servidor=${servidor}`),
+    iptvBuscar: (q, tipo) => Api.get(`/admin/iptv/buscar?q=${encodeURIComponent(q)}&tipo=${tipo}`),
     iptvAdicionar: (payload) => Api.post('/admin/iptv/adicionar', payload),
     iptvAdicionarLote: (items) => Api.post('/admin/iptv/adicionar-lote', { items }),
-    iptvImportarLoteBg: (servidor, tipo, qtd) => Api.post(`/admin/iptv/importar-lote-bg?servidor=${servidor}&tipo=${tipo}&quantidade=${qtd}`),
+    iptvImportarLoteBg: (tipo, qtd) => Api.post(`/admin/iptv/importar-lote-bg?tipo=${tipo}&quantidade=${qtd}`),
     iptvImportarLoteBgStatus: () => Api.get('/admin/iptv/importar-lote-bg/status'),
     usuarios() { return this.get('/admin/notificacoes/usuarios'); },
     bloquearUsuario(uid, status) { return this.post(`/admin/notificacoes/usuarios/${uid}/bloquear?bloqueado=${status}`); },
@@ -309,7 +308,7 @@ const Views = {
     },
 
     // ============================================================
-    // UPLOAD MANUAL
+    // UPLOAD MANUAL (NOVO)
     // ============================================================
     async manual(c) {
         c.innerHTML = `
@@ -354,7 +353,7 @@ const Views = {
                         </form>
                     </div>
 
-                    <!-- EPISÓDIOS -->
+                    <!-- EPISÓDIOS (Só aparece se a série foi criada) -->
                     <div id="episodios-area" class="stat-card rounded-xl p-5 border-green-500/30 hidden">
                         <div class="flex justify-between items-center mb-4">
                             <h2 class="text-sm font-bold text-white"><i class="fa-solid fa-layer-group text-green-400 mr-2"></i> Adicionar Episódios</h2>
@@ -411,7 +410,7 @@ const Views = {
             await Api.uploadManualEpisodio(window._serieManualId, fd);
             Toast.show('✅ Episódio adicionado!', 'success');
             form.reset();
-            form.querySelector('[name="episodio"]').value = parseInt(form.querySelector('[name="episodio"]').value || 1) + 1;
+            form.querySelector('[name="episodio"]').value = parseInt(form.querySelector('[name="episodio"]').value || 1) + 1; // Auto incrementa
         } catch (e) { Toast.show('Erro: ' + e.message, 'error'); }
     },
 
@@ -597,28 +596,14 @@ const Views = {
     },
 
     // ============================================================
-    // IPTV DIRETO (COM DIVISÃO DE SERVIDORES)
+    // IPTV DIRETO
     // ============================================================
     async buscaIptv(c) {
-        window._iptvServidor = window._iptvServidor || 'principal';
-
         c.innerHTML = `
-            <!-- SELEÇÃO DE SERVIDOR -->
-            <div class="flex gap-2 mb-6">
-                <button onclick="window._iptvServidor='principal'; Views.buscaIptv(document.getElementById('content'))" 
-                        class="server-btn flex-1 h-10 rounded-lg border border-[#333] text-xs font-bold ${window._iptvServidor === 'principal' ? 'active' : 'bg-[#1a1a1a] text-gray-400'}">
-                    🟢 Servidor Principal
-                </button>
-                <button onclick="window._iptvServidor='bellatrix'; Views.buscaIptv(document.getElementById('content'))" 
-                        class="server-btn flex-1 h-10 rounded-lg border border-[#333] text-xs font-bold ${window._iptvServidor === 'bellatrix' ? 'active' : 'bg-[#1a1a1a] text-gray-400'}">
-                    🔴 Servidor Bellatrix (Lançamentos)
-                </button>
-            </div>
-
             <!-- PAINEL DE IMPORTAÇÃO EM MASSA -->
             <div class="stat-card rounded-xl p-5 mb-6 border-purple-500/30 bg-purple-600/5">
-                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-layer-group text-purple-400 mr-2"></i> Importação em Massa <span class="text-gray-500 text-xs">(${window._iptvServidor === 'bellatrix' ? 'Bellatrix' : 'Principal'})</span></div>
-                <p class="text-xs text-gray-400 mb-4">Puxe uma grande quantidade de itens diretamente do provedor selecionado.</p>
+                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-layer-group text-purple-400 mr-2"></i> Importação em Massa</div>
+                <p class="text-xs text-gray-400 mb-4">Puxe uma grande quantidade de itens diretamente do provedor para o banco de dados, sem precisar pesquisar um por um.</p>
                 
                 <div class="flex flex-wrap gap-2 items-end">
                     <div class="flex-1 min-w-[140px]">
@@ -649,8 +634,8 @@ const Views = {
 
             <!-- BUSCA MANUAL -->
             <div class="stat-card rounded-xl p-5 mb-6 border-blue-500/30 bg-blue-600/5">
-                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Manual <span class="text-gray-500 text-xs">(${window._iptvServidor === 'bellatrix' ? 'Bellatrix' : 'Principal'})</span></div>
-                <p class="text-xs text-gray-400 mb-4">Pesquise um título específico para adicionar ao catálogo.</p>
+                <div class="text-sm font-bold text-white mb-2"><i class="fa-solid fa-satellite-dish text-blue-400 mr-2"></i> Busca Manual no Provedor</div>
+                <p class="text-xs text-gray-400 mb-4">Pesquise um título específico. Você pode selecionar vários e adicionar de uma vez.</p>
                 
                 <div class="flex flex-wrap gap-2 items-end">
                     <div class="flex-1 min-w-[140px]">
@@ -685,9 +670,8 @@ const Views = {
         const qtd = parseInt(document.getElementById('imp-qtd').value);
         const btn = document.getElementById('btn-imp-lote');
         const box = document.getElementById('imp-logs-area');
-        const servidor = window._iptvServidor;
 
-        if (!confirm(`Importar ${qtd === -1 ? 'todos os' : qtd} ${tipo}(s) do servidor ${servidor.toUpperCase()}?`)) return;
+        if (!confirm(`Importar ${qtd === -1 ? 'todos os' : qtd} ${tipo}(s) do provedor? Isso pode demorar.`)) return;
 
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Importando...';
@@ -695,7 +679,7 @@ const Views = {
         box.innerHTML = '<div class="text-gray-500">Iniciando conexão...</div>';
 
         try {
-            const r = await Api.iptvImportarLoteBg(servidor, tipo, qtd);
+            const r = await Api.iptvImportarLoteBg(tipo, qtd);
             if (!r.ok) throw new Error(r.msg);
             Toast.show('🚀 Importação iniciada!', 'info', 4000);
             
@@ -725,7 +709,6 @@ const Views = {
     async _iptvBuscar() {
         const q = document.getElementById('iptv-busca').value.trim();
         const tipo = document.getElementById('iptv-tipo').value;
-        const servidor = window._iptvServidor;
         if (!q) return Toast.show('Digite algo para buscar', 'warn');
 
         const btn = document.getElementById('btn-iptv-buscar');
@@ -733,14 +716,14 @@ const Views = {
         document.getElementById('iptv-lote-acoes').classList.add('hidden');
         
         btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Buscando...';
-        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Buscando no servidor ${servidor.toUpperCase()}...</div></div>`;
+        box.innerHTML = `<div class="col-span-full text-center py-10"><i class="fa-solid fa-circle-notch fa-spin text-2xl text-blue-500 mb-2"></i><div class="text-sm text-gray-400">Baixando lista do provedor e filtrando...</div></div>`;
 
         try {
-            const r = await Api.iptvBuscar(q, tipo, servidor);
+            const r = await Api.iptvBuscar(q, tipo);
             const items = r.items || [];
 
             if (items.length === 0) {
-                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-triangle-exclamation text-4xl text-yellow-500 mb-3"></i><div class="text-sm font-bold text-white">Nenhum resultado.</div></div>`;
+                box.innerHTML = `<div class="col-span-full text-center py-12"><i class="fa-solid fa-triangle-exclamation text-4xl text-yellow-500 mb-3"></i><div class="text-sm font-bold text-white">Nenhum resultado encontrado no provedor.</div><div class="text-xs text-gray-400">O nome pode estar diferente. Tente buscar apenas por "100".</div></div>`;
             } else {
                 box.innerHTML = items.map(it => {
                     const badge = it.ja_existe 

@@ -18,7 +18,7 @@ Base = declarative_base()
 class Filme(Base):
     __tablename__ = "filmes"
     id         = Column(Integer, primary_key=True)
-    iptv_id    = Column(String, unique=True, index=True) 
+    iptv_id    = Column(String, unique=True, index=True) # Para manuais, geraremos um ID "m_XXXX"
     titulo     = Column(String, nullable=False, index=True)
     capa       = Column(String)
     banner     = Column(String)
@@ -26,7 +26,7 @@ class Filme(Base):
     ano        = Column(Integer, index=True)
     categoria  = Column(String, index=True)
     sinopse    = Column(String)
-    url        = Column(String, nullable=False) 
+    url        = Column(String, nullable=False) # URL do .mp4
     editado    = Column(Boolean, default=False)
     added_by_name = Column(String)
     added_by_uid  = Column(String)
@@ -59,7 +59,7 @@ class Episodio(Base):
     temporada  = Column(Integer, index=True)
     episodio   = Column(Integer, index=True)
     titulo     = Column(String)
-    url        = Column(String, nullable=False)
+    url        = Column(String, nullable=False) # URL do .mp4 do episódio
     capa       = Column(String)
     sinopse    = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -101,6 +101,7 @@ def get_db():
     finally: db.close()
 
 def sincronizar(filmes: list, series: list, canais: list):
+    # Mantém a sincronização original (não apaga os manuais se não estiverem na lista do IPTV)
     db = SessionLocal()
     try:
         existentes = {f.iptv_id: f for f in db.query(Filme).all()}
