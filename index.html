@@ -26,6 +26,16 @@
     .template-btn:hover { border-color: #E50914; color: #fff; background: #222; }
     .template-btn.active { background: rgba(229,9,20,0.1); border-color: #E50914; color: #E50914; }
     .custom-checkbox { width: 20px; height: 20px; accent-color: #22c55e; cursor: pointer; }
+
+    /* ESTILOS DA LOJA / PRESENTES */
+    .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; max-height: 300px; overflow-y: auto; padding-right: 4px; }
+    .shop-item { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 8px; text-align: center; cursor: pointer; transition: 0.2s; position: relative; }
+    .shop-item:hover { border-color: #E50914; background: #222; }
+    .shop-item.selected { border-color: #22c55e; background: rgba(34, 197, 94, 0.1); }
+    .shop-item.selected::after { content: '\f00c'; font-family: 'Font Awesome 6 Free'; font-weight: 900; position: absolute; top: 4px; right: 4px; color: #22c55e; font-size: 12px; }
+    .shop-item img { width: 100%; height: 80px; object-fit: contain; margin-bottom: 4px; border-radius: 4px; }
+    .shop-item .name { font-size: 10px; font-weight: bold; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .shop-item .type { font-size: 8px; color: #888; text-transform: uppercase; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -92,6 +102,46 @@
 
 <div id="toast-root" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 <div id="modal-root"></div>
+
+<!-- MODAL DE ENVIAR PRESENTES -->
+<div id="gift-modal" class="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4 hidden backdrop-blur-sm">
+    <div class="bg-[#141414] rounded-2xl w-full max-w-2xl border border-[#262626] flex flex-col max-h-[90vh]">
+        <div class="p-4 border-b border-[#262626] flex items-center justify-between">
+            <div>
+                <h3 class="font-bold text-white text-lg"><i class="fa-solid fa-gift text-purple-500 mr-2"></i> Enviar Presentes</h3>
+                <p class="text-xs text-gray-500">Adicione itens da loja diretamente ao inventário do usuário.</p>
+            </div>
+            <button onclick="GiftSystem.closeModal()" class="w-8 h-8 rounded-lg hover:bg-[#222] text-gray-400">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <div class="p-4 overflow-y-auto space-y-4">
+            <div>
+                <label class="text-xs text-gray-400 block mb-1">Selecione o Usuário</label>
+                <select id="gift-user" class="input-dark w-full">
+                    <option value="">Carregando usuários...</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="text-xs text-gray-400 block mb-1">Selecione os Itens</label>
+                <div id="gift-items-grid" class="shop-grid">
+                    <div class="text-center py-4 text-gray-500 text-xs col-span-full">Carregando itens da loja...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-4 border-t border-[#262626] flex justify-end gap-2 bg-[#0f0f0f] rounded-b-2xl">
+            <button onclick="GiftSystem.closeModal()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold text-gray-400 hover:text-white">
+                Cancelar
+            </button>
+            <button id="btn-send-gift" onclick="GiftSystem.sendGift()" class="h-10 px-6 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white flex items-center gap-2">
+                <i class="fa-solid fa-paper-plane"></i> Enviar Presente
+            </button>
+        </div>
+    </div>
+</div>
 
 <script>
 const API = '';
@@ -306,7 +356,14 @@ const Views = {
                     <h2 class="text-xl font-black">👥 Gestão de Usuários</h2>
                     <p class="text-xs text-gray-500 mt-1">Gerencie quem tem acesso ao aplicativo.</p>
                 </div>
-                <button onclick="Router.render()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold flex items-center gap-2"><i class="fa-solid fa-rotate"></i> Atualizar</button>
+                <div class="flex items-center gap-2">
+                    <button onclick="GiftSystem.openModal()" class="h-10 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold flex items-center gap-2 text-white">
+                        <i class="fa-solid fa-gift"></i> Enviar Presentes
+                    </button>
+                    <button onclick="Router.render()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold flex items-center gap-2">
+                        <i class="fa-solid fa-rotate"></i> Atualizar
+                    </button>
+                </div>
             </div>
 
             ${itens.length === 0 ? `
@@ -325,7 +382,9 @@ const Views = {
                                     <div class="text-sm font-bold text-white truncate">${esc(u.nome)}</div>
                                     <div class="text-[10px] text-gray-400 truncate">${esc(u.email)}</div>
                                 </div>
-                                <div class="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold">${esc(u.plano || 'Grátis')}</div>
+                                <div class="px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-[10px] font-bold">
+                                    ${esc(u.plano || 'Grátis')}
+                                </div>
                             </div>
                             <div class="text-[9px] font-mono text-gray-600 truncate mb-3">UID: ${esc(u.uid)}</div>
                             
@@ -1136,6 +1195,149 @@ window.addEventListener('DOMContentLoaded', () => {
     setInterval(pollPedidos, 30000);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') Views.fecharModal(); });
 });
+</script>
+
+<!-- ⚡ SISTEMA DE PRESENTES (FIREBASE V10 MODULAR) -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs, doc, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ⚠️ COLE SUAS CREDENCIAIS DO FIREBASE AQUI
+const firebaseConfig = {
+    apiKey: "SUA_API_KEY",
+    authDomain: "SEU_AUTH_DOMAIN",
+    projectId: "SEU_PROJECT_ID",
+    storageBucket: "SEU_STORAGE_BUCKET",
+    messagingSenderId: "SEU_SENDER_ID",
+    appId: "SEU_APP_ID"
+};
+
+let app, db;
+try {
+    app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+} catch (e) {
+    console.warn("Firebase não configurado para Presentes:", e);
+}
+
+window.GiftSystem = {
+    selectedItems: [],
+
+    async openModal() {
+        if (!db) {
+            Toast.show("Firebase não configurado no Frontend. Verifique as credenciais no código.", "error");
+            return;
+        }
+        document.getElementById('gift-modal').classList.remove('hidden');
+        this.selectedItems = [];
+        await this.loadUsers();
+        await this.loadShopItems();
+    },
+
+    closeModal() {
+        document.getElementById('gift-modal').classList.add('hidden');
+    },
+
+    async loadUsers() {
+        const select = document.getElementById('gift-user');
+        select.innerHTML = '<option value="">Carregando...</option>';
+        try {
+            const querySnapshot = await getDocs(collection(db, "usuarios"));
+            let html = '<option value="">Selecione um usuário...</option>';
+            querySnapshot.forEach((doc) => {
+                const data = doc.data();
+                const nome = data.nome || data.displayName || "Sem Nome";
+                const email = data.email || "Sem Email";
+                html += `<option value="${doc.id}">${nome} (${email})</option>`;
+            });
+            select.innerHTML = html;
+        } catch (e) {
+            console.error("Erro ao buscar usuários:", e);
+            select.innerHTML = '<option value="">Erro ao carregar</option>';
+        }
+    },
+
+    async loadShopItems() {
+        const grid = document.getElementById('gift-items-grid');
+        grid.innerHTML = '<div class="text-center py-4 text-gray-500 text-xs col-span-full">Carregando itens da loja...</div>';
+        
+        try {
+            const querySnapshot = await getDocs(collection(db, "shop_items"));
+            if (querySnapshot.empty) {
+                grid.innerHTML = '<div class="text-center py-4 text-gray-500 text-xs col-span-full">Nenhum item na loja.</div>';
+                return;
+            }
+            
+            grid.innerHTML = '';
+            querySnapshot.forEach((doc) => {
+                const item = doc.data();
+                const itemId = doc.id;
+                const div = document.createElement('div');
+                div.className = 'shop-item';
+                div.onclick = () => this.toggleItem(itemId, div);
+                
+                div.innerHTML = `
+                    <img src="${item.image_url || 'https://via.placeholder.com/80'}" alt="${item.name}">
+                    <div class="name">${item.name || 'Sem Nome'}</div>
+                    <div class="type">${item.type === 'avatar_decoration' ? 'Avatar' : 'Efeito'}</div>
+                `;
+                grid.appendChild(div);
+            });
+        } catch (e) {
+            console.error("Erro ao buscar itens:", e);
+            grid.innerHTML = '<div class="text-center py-4 text-red-400 text-xs col-span-full">Erro ao carregar a loja.</div>';
+        }
+    },
+
+    toggleItem(itemId, element) {
+        if (this.selectedItems.includes(itemId)) {
+            this.selectedItems = this.selectedItems.filter(id => id !== itemId);
+            element.classList.remove('selected');
+        } else {
+            this.selectedItems.push(itemId);
+            element.classList.add('selected');
+        }
+    },
+
+    async sendGift() {
+        const userId = document.getElementById('gift-user').value;
+        if (!userId) {
+            Toast.show('Selecione um usuário primeiro.', 'warn');
+            return;
+        }
+        if (this.selectedItems.length === 0) {
+            Toast.show('Selecione pelo menos um item.', 'warn');
+            return;
+        }
+
+        const btn = document.getElementById('btn-send-gift');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
+
+        try {
+            const userRef = doc(db, "usuarios", userId);
+            
+            // ⚡ arrayUnion adiciona os itens sem duplicar e SEM notificar
+            await updateDoc(userRef, {
+                inventario: arrayUnion(...this.selectedItems)
+            });
+
+            Toast.show(`✅ ${this.selectedItems.length} presente(s) enviado(s) com sucesso!`, 'success');
+            
+            this.selectedItems = [];
+            document.querySelectorAll('.shop-item').forEach(el => el.classList.remove('selected'));
+            document.getElementById('gift-user').value = '';
+            this.closeModal();
+
+        } catch (e) {
+            console.error("Erro ao enviar presente:", e);
+            Toast.show('Erro ao enviar presente. Verifique o console.', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Enviar Presente';
+        }
+    }
+};
 </script>
 
 </body>
