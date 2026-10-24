@@ -120,7 +120,12 @@
 
         <div class="p-4 overflow-y-auto space-y-4 flex-1">
             <div>
-                <label class="text-xs text-gray-400 block mb-1 font-bold">1. Selecione o Usuário</label>
+                <div class="flex items-center justify-between mb-1">
+                    <label class="text-xs text-gray-400 font-bold">1. Selecione o Usuário</label>
+                    <button id="btn-clear-inventory" onclick="GiftSystem.clearInventory()" class="hidden text-[10px] text-red-400 hover:text-red-300 font-bold bg-red-900/20 px-2 py-1 rounded border border-red-900/50 transition">
+                        <i class="fa-solid fa-trash-can mr-1"></i> Zerar Inventário
+                    </button>
+                </div>
                 <select id="gift-user" class="input-dark w-full" onchange="GiftSystem.onUserChange()">
                     <option value="">Carregando usuários...</option>
                 </select>
@@ -142,14 +147,20 @@
             </div>
         </div>
 
-        <div class="p-4 border-t border-[#262626] flex items-center justify-between gap-2 bg-[#0f0f0f] rounded-b-2xl flex-shrink-0">
-            <div class="text-xs text-gray-400">
-                <i class="fa-solid fa-box-open mr-1"></i>
-                <span id="gift-counter-num">0</span> item(ns) selecionado(s)
+        <div class="p-4 border-t border-[#262626] flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#0f0f0f] rounded-b-2xl flex-shrink-0">
+            <div class="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-start">
+                <div class="text-xs text-gray-400">
+                    <i class="fa-solid fa-box-open mr-1"></i>
+                    <span id="gift-counter-num">0</span> item(ns) selecionado(s)
+                </div>
+                <label class="flex items-center gap-2 cursor-pointer text-xs text-gray-400 hover:text-white transition">
+                    <input type="checkbox" id="gift-send-push" class="custom-checkbox" checked>
+                    <span><i class="fa-solid fa-bell text-yellow-500 mr-1"></i> Enviar Push</span>
+                </label>
             </div>
-            <div class="flex gap-2">
-                <button onclick="GiftSystem.closeModal()" class="h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold text-gray-400 hover:text-white transition">Cancelar</button>
-                <button id="btn-send-gift" onclick="GiftSystem.sendGift()" class="h-10 px-6 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <div class="flex gap-2 w-full sm:w-auto">
+                <button onclick="GiftSystem.closeModal()" class="flex-1 sm:flex-none h-10 px-4 rounded-lg bg-[#1a1a1a] border border-[#333] text-xs font-bold text-gray-400 hover:text-white transition">Cancelar</button>
+                <button id="btn-send-gift" onclick="GiftSystem.sendGift()" class="flex-1 sm:flex-none h-10 px-6 rounded-lg bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white flex items-center justify-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed">
                     <i class="fa-solid fa-paper-plane"></i> Enviar Presente
                 </button>
             </div>
@@ -1211,7 +1222,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<!-- ⚡ SISTEMA DE PRESENTES DIRETO NO FIREBASE (VIA SDK WEB) -->
+<!-- ⚡ SISTEMA DE PRESENTES E NOTIFICAÇÕES -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
@@ -1219,7 +1230,6 @@ import {
     updateDoc, arrayUnion, getDoc
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-// Suas credenciais reais do Firebase Web App
 const firebaseConfig = {
   apiKey: "AIzaSyDWyKvN-ivvkeatIOzKc5rEPoKtwPh0QSc",
   authDomain: "venus-develops.firebaseapp.com",
@@ -1255,6 +1265,7 @@ window.GiftSystem = {
         this.currentUserInventory = [];
         this.updateCounter();
         document.getElementById('gift-search').value = '';
+        document.getElementById('btn-clear-inventory').classList.add('hidden');
         
         await this.loadAllData();
     },
@@ -1387,9 +1398,11 @@ window.GiftSystem = {
         this.selectedItems.clear();
         this.currentUserInventory = [];
         const info = document.getElementById('gift-user-info');
+        const btnClear = document.getElementById('btn-clear-inventory');
 
         if (!userId) {
             if (info) info.classList.add('hidden');
+            if (btnClear) btnClear.classList.add('hidden');
             this.renderItems();
             this.updateCounter();
             return;
@@ -1404,6 +1417,10 @@ window.GiftSystem = {
                 if (info) {
                     info.classList.remove('hidden');
                     info.innerHTML = `<i class="fa-solid fa-box-open mr-1"></i> Inventário atual: <b class="text-purple-400">${this.currentUserInventory.length}</b> item(ns)`;
+                }
+                if (btnClear) {
+                    if (this.currentUserInventory.length > 0) btnClear.classList.remove('hidden');
+                    else btnClear.classList.add('hidden');
                 }
             }
         } catch (e) {
@@ -1421,15 +1438,33 @@ window.GiftSystem = {
         if (this.selectedItems.size === 0) return Toast.show('Selecione pelo menos um item.', 'warn');
 
         const itemsToSend = Array.from(this.selectedItems);
+        const sendPush = document.getElementById('gift-send-push').checked;
+        
         const btn = document.getElementById('btn-send-gift');
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
 
         try {
-            // Atualiza direto no Firebase
+            // 1. Atualiza o Firestore
             await updateDoc(doc(db, "usuarios", userId), {
                 inventario: arrayUnion(...itemsToSend)
             });
+
+            // 2. Envia o Push se a caixinha estiver marcada
+            if (sendPush) {
+                try {
+                    await Api.notifEnviar({
+                        title: "🎁 Você recebeu presentes!",
+                        body: `Você recebeu ${itemsToSend.length} novo(s) item(ns) no seu inventário. Abra o app para conferir!`,
+                        target: "specific",
+                        uid: userId,
+                        type: "geral"
+                    });
+                } catch (err) {
+                    console.error("Erro ao enviar push:", err);
+                    Toast.show("Itens enviados, mas falha no push (verifique o servidor).", "warn", 4000);
+                }
+            }
 
             Toast.show(`✅ ${itemsToSend.length} presente(s) enviado(s) com sucesso!`, 'success', 3500);
             this.closeModal();
@@ -1439,6 +1474,34 @@ window.GiftSystem = {
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Enviar Presente';
+        }
+    },
+
+    async clearInventory() {
+        const userId = document.getElementById('gift-user').value;
+        if (!userId) return Toast.show('Selecione um usuário primeiro.', 'warn');
+        
+        if (!confirm('⚠️ Tem certeza que deseja APAGAR TODOS os itens do inventário deste usuário? Essa ação não pode ser desfeita.')) return;
+
+        const btn = document.getElementById('btn-clear-inventory');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Zerando...';
+
+        try {
+            // Zera a array no Firestore
+            await updateDoc(doc(db, "usuarios", userId), {
+                inventario: []
+            });
+            
+            Toast.show(`✅ Inventário zerado com sucesso!`, 'success', 3500);
+            this.onUserChange(); // Recarrega os dados visuais
+        } catch (e) {
+            console.error("Erro ao zerar:", e);
+            Toast.show('❌ Erro ao zerar inventário.', 'error', 5000);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
         }
     }
 };
