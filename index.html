@@ -268,10 +268,7 @@ const Api = {
     usuarios() { return this.get('/admin/notificacoes/usuarios'); },
     bloquearUsuario(uid, status) { return this.post(`/admin/notificacoes/usuarios/${uid}/bloquear?bloqueado=${status}`); },
     deletarUsuario(uid) { return this.del(`/admin/notificacoes/usuarios/${uid}`); },
-    alterarPlano(uid, plano) { return this.post(`/admin/notificacoes/usuarios/${uid}/alterar-plano`, { plano }); },
-    // NOVA ROTA DE PRESENTES NO SERVIDOR (Mais seguro e resolve o problema de credenciais)
-    giftDados() { return this.get('/admin/presentes/dados'); },
-    giftEnviar(userId, itens) { return this.post('/admin/presentes/enviar', { user_id: userId, itens: itens }); }
+    alterarPlano(uid, plano) { return this.post(`/admin/notificacoes/usuarios/${uid}/alterar-plano`, { plano }); }
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1212,14 +1209,46 @@ window.addEventListener('DOMContentLoaded', () => {
     setInterval(pollPedidos, 30000);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') Views.fecharModal(); });
 });
+</script>
 
-// ⚡ SISTEMA DE PRESENTES (AGORA VIA API DO SERVIDOR, SEM PRECISAR DE FIREBASE NO FRONT)
+<!-- ⚡ SISTEMA DE PRESENTES DIRETO NO FIREBASE (VIA SDK WEB) -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+    getFirestore, collection, getDocs, doc,
+    updateDoc, arrayUnion, getDoc
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// Suas credenciais reais do Firebase Web App
+const firebaseConfig = {
+  apiKey: "AIzaSyDWyKvN-ivvkeatIOzKc5rEPoKtwPh0QSc",
+  authDomain: "venus-develops.firebaseapp.com",
+  projectId: "venus-develops",
+  storageBucket: "venus-develops.firebasestorage.app",
+  messagingSenderId: "376359167561",
+  appId: "1:376359167561:web:2e6bb47bc0877db7b80198",
+  measurementId: "G-MXGCJ55P6W"
+};
+
+let app, db;
+try {
+    app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    console.log("🔥 Firebase conectado direto no navegador.");
+} catch (e) {
+    console.error("Erro ao iniciar Firebase:", e);
+}
+
 window.GiftSystem = {
     selectedItems: new Set(),
     allItems: [],
     currentUserInventory: [],
 
     async openModal() {
+        if (!db) {
+            Toast.show("⚠️ Firebase não inicializado no navegador.", "error", 6000);
+            return;
+        }
         document.getElementById('gift-modal').classList.remove('hidden');
         this.selectedItems.clear();
         this.allItems = [];
@@ -1240,34 +1269,45 @@ window.GiftSystem = {
         const select = document.getElementById('gift-user');
         const grid = document.getElementById('gift-items-grid');
         select.innerHTML = '<option value="">Carregando...</option>';
-        grid.innerHTML = '<div class="text-center py-6 text-gray-500 text-xs col-span-full"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i> Carregando dados do servidor...</div>';
+        grid.innerHTML = '<div class="text-center py-6 text-gray-500 text-xs col-span-full"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i> Carregando dados do Firebase...</div>';
 
         try {
-            const data = await Api.giftDados();
-            
-            // Preenche usuários
-            let html = '<option value="">Selecione um usuário...</option>';
-            if (data.usuarios && data.usuarios.length > 0) {
-                data.usuarios.forEach(u => {
+            // 1. Carregar Usuários
+            const userSnap = await getDocs(collection(db, "usuarios"));
+            let userHtml = '<option value="">Selecione um usuário...</option>';
+            if (userSnap.empty) {
+                userHtml = '<option value="">Nenhum usuário cadastrado</option>';
+            } else {
+                userSnap.forEach((d) => {
+                    const u = d.data();
                     const nome = u.nome || u.displayName || "Sem Nome";
                     const email = u.email || "Sem Email";
                     const bloqueado = u.bloqueado ? " [BLOQUEADO]" : "";
-                    html += `<option value="${u.uid}">${nome} (${email})${bloqueado}</option>`;
+                    userHtml += `<option value="${d.id}">${nome} (${email})${bloqueado}</option>`;
                 });
-            } else {
-                html = '<option value="">Nenhum usuário cadastrado</option>';
             }
-            select.innerHTML = html;
+            select.innerHTML = userHtml;
 
-            // Guarda os itens
-            this.allItems = data.itens || [];
+            // 2. Carregar Itens da Loja
+            const shopSnap = await getDocs(collection(db, "shop_items"));
+            this.allItems = [];
+            shopSnap.forEach((d) => {
+                const i = d.data();
+                this.allItems.push({
+                    id: d.id,
+                    name: i.name || 'Sem Nome',
+                    image_url: i.image_url || '',
+                    type: i.type || 'avatar_decoration'
+                });
+            });
+
             this.renderItems();
 
         } catch (e) {
-            console.error("Erro ao carregar dados:", e);
-            select.innerHTML = '<option value="">❌ Erro ao carregar do servidor</option>';
-            grid.innerHTML = '<div class="text-center py-6 text-red-400 text-xs col-span-full">❌ Erro ao carregar os itens.<br>Verifique se a rota /admin/presentes/dados foi criada no main.py.</div>';
-            Toast.show("Erro ao conectar com o servidor. Rota de presentes ativa?", "error", 5000);
+            console.error("Erro ao carregar:", e);
+            select.innerHTML = '<option value="">❌ Erro ao carregar</option>';
+            grid.innerHTML = '<div class="text-center py-6 text-red-400 text-xs col-span-full">❌ Erro ao buscar dados do Firebase.<br>Verifique as Regras do Firestore.</div>';
+            Toast.show("Erro de permissão no Firebase. Libere o acesso na aba Rules.", "error", 6000);
         }
     },
 
@@ -1356,16 +1396,15 @@ window.GiftSystem = {
         }
 
         try {
-            // Como não temos Firebase no frontend, podemos buscar o inventário atual de um usuário através da API de usuários do painel
-            const r = await Api.usuarios();
-            const u = (r.items || []).find(x => x.uid === userId);
-            if (u && u.inventario) {
-                this.currentUserInventory = Array.isArray(u.inventario) ? u.inventario : [];
-            }
-            
-            if (info) {
-                info.classList.remove('hidden');
-                info.innerHTML = `<i class="fa-solid fa-box-open mr-1"></i> Inventário atual: <b class="text-purple-400">${this.currentUserInventory.length}</b> item(ns)`;
+            const userSnap = await getDoc(doc(db, "usuarios", userId));
+            if (userSnap.exists()) {
+                const data = userSnap.data();
+                this.currentUserInventory = Array.isArray(data.inventario) ? data.inventario : [];
+                
+                if (info) {
+                    info.classList.remove('hidden');
+                    info.innerHTML = `<i class="fa-solid fa-box-open mr-1"></i> Inventário atual: <b class="text-purple-400">${this.currentUserInventory.length}</b> item(ns)`;
+                }
             }
         } catch (e) {
             console.error("Erro ao carregar inventário:", e);
@@ -1387,14 +1426,16 @@ window.GiftSystem = {
         btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Enviando...';
 
         try {
-            const r = await Api.giftEnviar(userId, itemsToSend);
-            if (!r.ok) throw new Error(r.msg || 'Erro desconhecido');
+            // Atualiza direto no Firebase
+            await updateDoc(doc(db, "usuarios", userId), {
+                inventario: arrayUnion(...itemsToSend)
+            });
 
             Toast.show(`✅ ${itemsToSend.length} presente(s) enviado(s) com sucesso!`, 'success', 3500);
             this.closeModal();
         } catch (e) {
             console.error("Erro ao enviar:", e);
-            Toast.show(`❌ Erro: ${e.message}. (A rota /admin/presentes/enviar foi criada no Python?)`, 'error', 5000);
+            Toast.show('❌ Erro ao enviar. O Firestore bloqueou a escrita.', 'error', 5000);
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Enviar Presente';
