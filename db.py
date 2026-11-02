@@ -1,7 +1,8 @@
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+from schema_rico import CatalogoRicoMixin
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "cache" / "venus.db"
@@ -11,54 +12,17 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
-class Filme(Base):
+class Filme(Base, CatalogoRicoMixin):
     __tablename__ = "filmes"
-    id         = Column(Integer, primary_key=True)
-    iptv_id    = Column(String, unique=True, index=True)
-    titulo     = Column(String, nullable=False, index=True)
-    capa       = Column(String)
-    banner     = Column(String)
-    logo       = Column(String)
-    ano        = Column(Integer, index=True)
-    categoria  = Column(String, index=True)
-    sinopse    = Column(String)
-    url        = Column(String, nullable=False)
-    editado    = Column(Boolean, default=False)
-    added_by_name = Column(String)
-    added_by_uid  = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
 
-class Serie(Base):
+class Serie(Base, CatalogoRicoMixin):
     __tablename__ = "series"
-    id         = Column(Integer, primary_key=True)
-    iptv_id    = Column(String, unique=True, index=True)
-    titulo     = Column(String, nullable=False, index=True)
-    capa       = Column(String)
-    banner     = Column(String)
-    logo       = Column(String)
-    ano        = Column(Integer, index=True)
-    categoria  = Column(String, index=True)
-    sinopse    = Column(String)
-    editado    = Column(Boolean, default=False)
-    added_by_name = Column(String)
-    added_by_uid  = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
 
-class Canal(Base):
+class Canal(Base, CatalogoRicoMixin):
     __tablename__ = "canais"
-    id         = Column(Integer, primary_key=True)
-    iptv_id    = Column(String, unique=True, index=True)
-    titulo     = Column(String, nullable=False, index=True)
-    capa       = Column(String)
-    categoria  = Column(String, index=True)
-    url        = Column(String, nullable=False)
-    editado    = Column(Boolean, default=False)
-    added_by_name = Column(String)
-    added_by_uid  = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
 
 class Slide(Base):
     __tablename__ = "slides"
@@ -73,31 +37,20 @@ class Slide(Base):
     ativo      = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class Falha(Base):
+    __tablename__ = "falhas"
+    id         = Column(Integer, primary_key=True)
+    iptv_id    = Column(String, unique=True, index=True)
+    nome_original = Column(String, nullable=False)
+    tipo       = Column(String, nullable=False)
+    motivo     = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 def criar_tabelas():
     Base.metadata.create_all(bind=engine)
-    print(f"[DB] Tabelas OK → {DB_PATH}")
+    print(f"[DB] Tabelas do novo modelo criadas/verificadas → {DB_PATH}")
 
 def get_db():
     db = SessionLocal()
     try: yield db
-    finally: db.close()
-
-def sincronizar(filmes: list, series: list, canais: list):
-    db = SessionLocal()
-    try:
-        existentes = {f.iptv_id: f for f in db.query(Filme).all()}
-        for f in filmes:
-            iptv_id = str(f.get("id") or "")
-            if not iptv_id: continue
-            if iptv_id in existentes:
-                ex = existentes[iptv_id]
-                if not ex.editado:
-                    ex.titulo = f.get("titulo") or ex.titulo
-                    ex.capa = f.get("capa") or ex.capa
-                    ex.ano = f.get("ano") or ex.ano
-                    ex.categoria = f.get("categoria") or ex.categoria
-                    ex.url = f.get("url") or ex.url
-            else:
-                db.add(Filme(iptv_id=iptv_id, titulo=f.get("titulo") or "", capa=f.get("capa"), ano=f.get("ano"), categoria=f.get("categoria"), url=f.get("url") or ""))
-        db.commit()
     finally: db.close()

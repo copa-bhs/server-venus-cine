@@ -4,7 +4,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
-
 def load_env_file() -> None:
     if not ENV_FILE.exists():
         return
@@ -18,16 +17,13 @@ def load_env_file() -> None:
         if key and key not in os.environ:
             os.environ[key] = value
 
-
 load_env_file()
-
 
 def _require(key: str) -> str:
     value = os.getenv(key)
     if not value:
         raise RuntimeError(f"[config] Variável obrigatória '{key}' não encontrada.")
     return value.strip()
-
 
 IPTV_USERNAME = _require("IPTV_USERNAME")
 IPTV_PASSWORD = _require("IPTV_PASSWORD")
@@ -53,7 +49,8 @@ PROXY_CHUNK_SIZE       = int(os.getenv("PROXY_CHUNK_SIZE", "262144"))
 PROXY_CONNECT_TIMEOUT  = int(os.getenv("PROXY_CONNECT_TIMEOUT", "10"))
 PROXY_READ_TIMEOUT     = int(os.getenv("PROXY_READ_TIMEOUT", "300"))
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+# ⚠️ DOMÍNIO DA VPS (para links de imagem e proxy)
+PUBLIC_BASE_URL = "https://cine.venusdev.xyz" 
 
 CACHE_TTL = int(os.getenv("CACHE_TTL", "21600"))
 PORT      = int(os.getenv("PORT", "8000"))
