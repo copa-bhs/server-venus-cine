@@ -1,19 +1,15 @@
 import asyncio, json, secrets, time, re, unicodedata
 from pathlib import Path
 from typing import Optional
-import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-
 from config import *
 from info import fetch_movie_info, fetch_series_info
 from home import build_home_async, _slugify
 from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy
-import tmdb
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
 from iptv_catalog import rodar_importacao
@@ -21,7 +17,6 @@ from websocket_manager import manager
 from notificacoes import router as notificacoes_router
 
 app = FastAPI(title="IPTV Organizer Pro", version="13.0.0")
-
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
 app.include_router(notificacoes_router)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -59,26 +54,37 @@ def paginate(items, page, size):
     total = len(items); tp = (total + size - 1) // size if size else 0; st = (page - 1) * size
     return {"page": page, "page_size": size, "total_items": total, "total_pages": tp, "has_next": page < tp, "has_prev": page > 1, "items": items[st:st + size]}
 
-def _normalizar_busca(texto: str) -> str:
-    if not texto: return ""
-    t = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('ascii').lower()
-    t = re.sub(r'[^a-z0-9\s]', ' ', t)
-    t = re.sub(r'\b(the|os|as|o|a|um|uma|de|do|da)\b', ' ', t)
-    return " ".join(t.split())
-
-def _card_app(item, tipo=None):
-    if isinstance(item, dict):
-        t = tipo or item.get("tipo") or "filme"
-        item_id = str(item.get("id") or item.get("iptv_id"))
-        titulo = item.get("titulo") or item.get("title")
-        capa = item.get("capa") or item.get("poster")
-        ano = item.get("ano") or item.get("year")
-        slug = _slugify(titulo or "", ano)
-        return {"id": item_id, "title": titulo, "poster": capa, "type": "movie" if t=="filme" else "series", "year": ano, "slug": slug, "titulo": titulo, "capa": capa, "tipo": t, "ano": ano}
-    else:
-        t = tipo or "filme"
-        slug = item.slug or _slugify(item.title or "", item.year)
-        return {"id": str(item.iptv_id), "title": item.title, "poster": item.poster, "type": "movie" if t=="filme" else "series", "year": item.year, "slug": slug, "titulo": item.title, "capa": item.poster, "tipo": t, "ano": item.year, "rating_avg": item.rating_avg, "backdrop": item.backdrop, "genres": json.loads(item.genres) if item.genres else []}
+def _serializar_rico(item):
+    """Retorna o JSON EXATO que foi combinado, sem duplicações."""
+    try:
+        generos = json.loads(item.genres) if item.genres else []
+    except:
+        generos = []
+    
+    return {
+        "iptv_id": str(item.iptv_id),
+        "stream_type": item.stream_type,
+        "coletany": item.coletany,
+        "tmdb_id": item.tmdb_id,
+        "imdb_id": item.imdb_id,
+        "title": item.title,
+        "original_title": item.original_title,
+        "slug": item.slug,
+        "type": item.type,
+        "year": item.year,
+        "duration": item.duration,
+        "description": item.description,
+        "poster": item.poster,
+        "logo": item.logo,
+        "backdrop": item.backdrop,
+        "rating_avg": item.rating_avg,
+        "rating_count": item.rating_count,
+        "views_count": item.views_count,
+        "premium": item.premium,
+        "audio_type": item.audio_type,
+        "genres": generos,
+        "age_rating": item.age_rating
+    }
 
 @app.on_event("startup")
 async def startup():
@@ -110,7 +116,7 @@ async def home(force: bool = False):
     db = SessionLocal()
     try:
         if db.query(FilmeDB).count() == 0 and db.query(SerieDB).count() == 0:
-            return {"hero": [], "colecoes": [], "trailers": [], "stats": _stats(db)}
+            return {"hero": [], "stats": _stats(db)}
         if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < 300: return _HOME_CACHE
         _HOME_CACHE = await build_home_async(db, force_hero=force)
         _HOME_CACHE_TS = time.time()
@@ -123,7 +129,7 @@ def listar_filmes(page: int = Query(1), size: int = Query(30), categoria: str | 
     if categoria: q = q.filter(FilmeDB.coletany.ilike(f"%{categoria}%"))
     total = q.count()
     items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1)//size, "items": [_card_app(it, "filme") for it in items]}
+    return {"page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1)//size, "items": [_serializar_rico(it) for it in items]}
 
 @app.get("/series")
 def listar_series(page: int = Query(1), size: int = Query(30), categoria: str | None = None, db: Session = Depends(get_db)):
@@ -131,16 +137,24 @@ def listar_series(page: int = Query(1), size: int = Query(30), categoria: str | 
     if categoria: q = q.filter(SerieDB.coletany.ilike(f"%{categoria}%"))
     total = q.count()
     items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1)//size, "items": [_card_app(it, "serie") for it in items]}
+    return {"page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1)//size, "items": [_serializar_rico(it) for it in items]}
+
+@app.get("/canais")
+def listar_canais(page: int = Query(1), size: int = Query(50), categoria: str | None = None, db: Session = Depends(get_db)):
+    q = db.query(CanalDB)
+    if categoria: q = q.filter(CanalDB.coletany.ilike(f"%{categoria}%"))
+    total = q.count()
+    items = q.offset((page - 1) * size).limit(size).all()
+    return {"page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1)//size, "items": [_serializar_rico(it) for it in items]}
 
 @app.get("/buscar")
 def buscar(q: str, tipo: str | None = None, page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q_norm = f"%{q}%"
     resultados = []
     if tipo in (None, "filme", "movie"):
-        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(50).all(): resultados.append(_card_app(f, "filme"))
+        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(50).all(): resultados.append(_serializar_rico(f))
     if tipo in (None, "serie", "series"):
-        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(50).all(): resultados.append(_card_app(s, "serie"))
+        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(50).all(): resultados.append(_serializar_rico(s))
     return paginate(resultados, page, size)
 
 @app.get("/categorias")
@@ -152,8 +166,7 @@ def categorias(db: Session = Depends(get_db)):
 @app.get("/info/filme/{filme_id}")
 async def info_filme(filme_id: str, db: Session = Depends(get_db)):
     f = db.query(FilmeDB).filter(FilmeDB.iptv_id == filme_id).first()
-    if f:
-        return {"id": f.iptv_id, "tipo": "filme", "titulo": f.title, "capa": f.poster, "banner": f.backdrop, "logo": f.logo, "sinopse": f.description, "generos": json.loads(f.genres) if f.genres else [], "ano": f.year, "duracao": f.duration, "score": f.rating_avg, "classificacao": f.age_rating, "url_stream": f.url, "tmdb_id": f.tmdb_id}
+    if f: return _serializar_rico(f)
     return await fetch_movie_info(filme_id)
 
 @app.get("/info/serie/{serie_id}")
@@ -166,12 +179,7 @@ def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     if q: query = query.filter(FilmeDB.title.ilike(f"%{q}%"))
     total = query.count()
     items = query.offset((page-1)*size).limit(size).all()
-    out = []
-    for it in items:
-        d = {c.name: getattr(it, c.name) for c in it.__table__.columns}
-        d['titulo'] = it.title; d['capa'] = it.poster; d['iptv_id'] = it.iptv_id
-        out.append(d)
-    return {"page": page, "page_size": size, "total_items": total, "items": out}
+    return {"page": page, "page_size": size, "total_items": total, "items": [_serializar_rico(it) for it in items]}
 
 @app.get("/admin/series")
 def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
@@ -179,12 +187,7 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     if q: query = query.filter(SerieDB.title.ilike(f"%{q}%"))
     total = query.count()
     items = query.offset((page-1)*size).limit(size).all()
-    out = []
-    for it in items:
-        d = {c.name: getattr(it, c.name) for c in it.__table__.columns}
-        d['titulo'] = it.title; d['capa'] = it.poster; d['iptv_id'] = it.iptv_id
-        out.append(d)
-    return {"page": page, "page_size": size, "total_items": total, "items": out}
+    return {"page": page, "page_size": size, "total_items": total, "items": [_serializar_rico(it) for it in items]}
 
 @app.get("/admin/canais")
 def admin_canais(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
@@ -192,12 +195,7 @@ def admin_canais(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     if q: query = query.filter(CanalDB.title.ilike(f"%{q}%"))
     total = query.count()
     items = query.offset((page-1)*size).limit(size).all()
-    out = []
-    for it in items:
-        d = {c.name: getattr(it, c.name) for c in it.__table__.columns}
-        d['titulo'] = it.title; d['capa'] = it.poster; d['iptv_id'] = it.iptv_id
-        out.append(d)
-    return {"page": page, "page_size": size, "total_items": total, "items": out}
+    return {"page": page, "page_size": size, "total_items": total, "items": [_serializar_rico(it) for it in items]}
 
 @app.get("/admin/falhas")
 def admin_falhas(page: int = 1, size: int = 50, db: Session = Depends(get_db)):
@@ -211,9 +209,7 @@ async def admin_importar_catalogo():
     if _SYNC_ATIVO: return {"ok": False, "msg": "Já existe uma importação em andamento."}
     _SYNC_ATIVO = True
     try:
-        # 1. Roda o script que baixa do IPTV e enriquece com TMDB
         await rodar_importacao()
-        # 2. Importa o JSON gerado para o SQL
         sucesso = importar_catalogo()
         _rebuild_slugs()
         await manager.broadcast("catalogo_sincronizado", _stats())
@@ -230,9 +226,7 @@ def admin_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
     elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
     else: raise HTTPException(400, "inválido")
     if not it: raise HTTPException(404, "Não encontrado")
-    d = {c.name: getattr(it, c.name) for c in it.__table__.columns}
-    d['titulo'] = it.title; d['capa'] = it.poster; d['sinopse'] = it.description
-    return d
+    return _serializar_rico(it)
 
 @app.delete("/admin/item/{tipo}/{item_id}")
 def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
