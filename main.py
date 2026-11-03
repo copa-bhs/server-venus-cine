@@ -6,10 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
+
 from config import *
 from info import fetch_movie_info, fetch_series_info
-from home import build_home_async, _slugify
-from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy
+from home import build_home_async
+from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy, slugify
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
 from iptv_catalog import rodar_importacao
@@ -55,12 +57,17 @@ def paginate(items, page, size):
     return {"page": page, "page_size": size, "total_items": total, "total_pages": tp, "has_next": page < tp, "has_prev": page > 1, "items": items[st:st + size]}
 
 def _serializar_rico(item):
-    """Retorna o JSON EXATO que foi combinado, sem duplicações."""
+    """Retorna o JSON EXATO com links de play e compatibilidade de IDs."""
     try:
         generos = json.loads(item.genres) if item.genres else []
     except:
         generos = []
     
+    # Monta a URL de Stream (Proxy) para o App dar Play
+    slug = item.slug or slugify(item.title or "", item.year)
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
+
     return {
         "iptv_id": str(item.iptv_id),
         "stream_type": item.stream_type,
@@ -69,7 +76,7 @@ def _serializar_rico(item):
         "imdb_id": item.imdb_id,
         "title": item.title,
         "original_title": item.original_title,
-        "slug": item.slug,
+        "slug": slug,
         "type": item.type,
         "year": item.year,
         "duration": item.duration,
@@ -83,7 +90,10 @@ def _serializar_rico(item):
         "premium": item.premium,
         "audio_type": item.audio_type,
         "genres": generos,
-        "age_rating": item.age_rating
+        "age_rating": item.age_rating,
+        # Links de reprodução para o App não precisar montar
+        "url_stream": url_proxy,
+        "url_stream_direto": item.url
     }
 
 @app.on_event("startup")
@@ -116,9 +126,9 @@ async def home(force: bool = False):
     db = SessionLocal()
     try:
         if db.query(FilmeDB).count() == 0 and db.query(SerieDB).count() == 0:
-            return {"hero": [], "stats": _stats(db)}
+            return {"hero": [], "colecoes": [], "stats": _stats(db)}
         if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < 300: return _HOME_CACHE
-        _HOME_CACHE = await build_home_async(db, force_hero=force)
+        _HOME_CACHE = await build_home_async(db, force=force)
         _HOME_CACHE_TS = time.time()
         return _HOME_CACHE
     finally: db.close()
@@ -163,15 +173,31 @@ def categorias(db: Session = Depends(get_db)):
     s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct() if r[0]]
     return {"filmes": sorted(set(f_cats)), "series": sorted(set(s_cats))}
 
-@app.get("/info/filme/{filme_id}")
-async def info_filme(filme_id: str, db: Session = Depends(get_db)):
-    f = db.query(FilmeDB).filter(FilmeDB.iptv_id == filme_id).first()
-    if f: return _serializar_rico(f)
-    return await fetch_movie_info(filme_id)
+# === ROTAS DE INFO CORRIGIDAS E BLINDADAS ===
+# Agora busca por iptv_id OU tmdb_id, e tem rotas em pt e en
 
-@app.get("/info/serie/{serie_id}")
-async def info_serie(serie_id: str, db: Session = Depends(get_db)):
-    return await fetch_series_info(serie_id)
+@app.get("/info/filme/{item_id}")
+@app.get("/info/movie/{item_id}")
+async def info_filme(item_id: str, db: Session = Depends(get_db)):
+    # Tenta achar no banco pelo iptv_id ou tmdb_id
+    f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
+    if f: return _serializar_rico(f)
+    # Fallback para buscar direto no Xtream se não estiver no banco
+    return await fetch_movie_info(item_id)
+
+@app.get("/info/serie/{item_id}")
+@app.get("/info/tv/{item_id}")
+@app.get("/info/series/{item_id}")
+async def info_serie(item_id: str, db: Session = Depends(get_db)):
+    # Tenta achar a série no banco para retornar os dados ricos
+    s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
+    # Como o app precisa dos episódios, chamamos o Xtream para pegar os eps, 
+    # mas usamos o ID correto do banco se ele tiver sido enviado pelo tmdb_id
+    if s:
+        item_id = s.iptv_id 
+    return await fetch_series_info(item_id)
+
+# ==========================================
 
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
