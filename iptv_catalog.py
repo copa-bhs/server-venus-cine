@@ -5,9 +5,8 @@ import time
 import asyncio
 import httpx
 from pathlib import Path
+import logs # ⚡ Importa o gerenciador de logs
 
-# Importa o parser local
-import parser as iptv_parser
 from config import (
     TMDB_API_KEY, FANART_API_KEY, FANART_LANGUAGE,
     IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT, CACHE_DIR
@@ -47,7 +46,6 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
         data_str = d.get('release_date') or d.get('first_air_date') or ""
         ano = data_str[:4] if data_str else None
         
-        # Logo
         logo_url = None
         logos = d.get('images', {}).get('logos', [])
         if logos:
@@ -57,7 +55,6 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
                 for lg in logos:
                     if lg.get('iso_639_1') in ['en', None]: logo_url = f"https://image.tmdb.org/t/p/w500{lg['file_path']}"; break
 
-        # Fallback Fanart se não tiver logo
         if not logo_url and FANART_API_KEY:
             try:
                 tvdb_id = d.get('external_ids', {}).get('tvdb_id') if tipo != "movie" else None
@@ -72,7 +69,6 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
                         if logo_url: break
             except: pass
 
-        # Classificação
         age_rating = None
         if tipo == "movie":
             for c in d.get('release_dates', {}).get('results', []):
@@ -82,110 +78,79 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
                     if age_rating: break
         else:
             for c in d.get('content_ratings', {}).get('results', []):
-                if c.get('iso_3166_1') in ['BR', 'US'] and c.get('rating', '').strip():
-                    age_rating = c['rating'].strip(); break
+                if c.get('iso_3166_1') in ['BR', 'US'] and c.get('rating', '').strip(): age_rating = c['rating'].strip(); break
 
         titulo_base = d.get('title') or d.get('name') or ""
         slug_gerado = re.sub(r'[^a-z0-9]+', '-', titulo_base.lower()).strip('-')
         slug_gerado = f"{slug_gerado}-{ano}" if ano else slug_gerado
 
         return {
-            "tmdb_id": d.get('id'),
-            "imdb_id": d.get('external_ids', {}).get('imdb_id'),
-            "title": d.get('title') or d.get('name'),
-            "original_title": d.get('original_title') or d.get('original_name'),
-            "slug": slug_gerado,
-            "type": "movie" if tipo == "movie" else "series",
+            "tmdb_id": d.get('id'), "imdb_id": d.get('external_ids', {}).get('imdb_id'),
+            "title": d.get('title') or d.get('name'), "original_title": d.get('original_title') or d.get('original_name'),
+            "slug": slug_gerado, "type": "movie" if tipo == "movie" else "series",
             "year": int(ano) if ano and ano.isdigit() else None,
             "duration": d.get('runtime') or (d.get('episode_run_time', [None])[0] if d.get('episode_run_time') else None),
             "description": d.get('overview'),
             "poster": f"https://image.tmdb.org/t/p/w500{d['poster_path']}" if d.get('poster_path') else None,
             "logo": logo_url,
             "backdrop": f"https://image.tmdb.org/t/p/w780{d['backdrop_path']}" if d.get('backdrop_path') else None,
-            "rating_avg": d.get('vote_average', 0),
-            "rating_count": d.get('vote_count', 0),
-            "views_count": 0,
-            "premium": True,
-            "audio_type": "dubbed",
+            "rating_avg": d.get('vote_average', 0), "rating_count": d.get('vote_count', 0),
+            "views_count": 0, "premium": True, "audio_type": "dubbed",
             "genres": [g['name'] for g in d.get('genres', [])],
             "age_rating": age_rating
         }
     except Exception as e:
-        print(f"Erro TMDB ({tmdb_id}): {e}")
         return None
 
-async def processar_item(client, item, semaforo):
+async def processar_item(client, item, semaforo, concluidos, total):
     async with semaforo:
         nome_limpo = item["titulo"]
         tmdb_id = await _buscar_tmdb(client, nome_limpo, item["tipo"], item.get("ano"))
         
-        # Se não achou pelo nome, tenta pelo painel IPTV
         if not tmdb_id:
             action = "get_vod_info" if item["tipo"] == "movie" else "get_series_info"
             url_info = f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}&vod_id={item['id']}" if item["tipo"] == "movie" else f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}&series_id={item['id']}"
             try:
                 r = await client.get(url_info, timeout=10)
-                if r.status_code == 200:
-                    tmdb_id = r.json().get('info', {}).get('tmdb_id')
+                if r.status_code == 200: tmdb_id = r.json().get('info', {}).get('tmdb_id')
             except: pass
 
         if tmdb_id:
             meta = await _obter_detalhes_tmdb(client, tmdb_id, item["tipo"])
             if meta:
                 meta["audio_type"] = item.get("audio_type", "dubbed")
-                return {
-                    "status": "success",
-                    "data": {
-                        "iptv_id": item["id"],
-                        "stream_type": item["tipo"],
-                        "coletany": item.get("categoria", "Desconhecida"),
-                        "url": item.get("url", ""),
-                        **meta
-                    }
-                }
+                if concluidos % 50 == 0:
+                    logs.adicionar_log(f"[{concluidos}/{total}] ✅ Enriquecido: {meta.get('title')}")
+                return {"status": "success", "data": {"iptv_id": item["id"], "stream_type": item["tipo"], "coletany": item.get("categoria", "Desconhecida"), "url": item.get("url", ""), **meta}}
         
-        return {
-            "status": "fail",
-            "data": {
-                "iptv_id": item["id"],
-                "nome_original": item.get("nome_bruto") or item["titulo"],
-                "tipo": item["tipo"]
-            }
-        }
+        return {"status": "fail", "data": {"iptv_id": item["id"], "nome_original": item.get("nome_bruto") or item["titulo"], "tipo": item["tipo"]}}
 
 async def rodar_importacao():
-    print("📥 Baixando listas do IPTV...")
+    import parser as iptv_parser
+    
+    logs.adicionar_log("📥 Baixando listas do IPTV...")
     filmes, series = await asyncio.gather(iptv_parser.fetch_filmes(), iptv_parser.fetch_series())
     itens = filmes + series
     total = len(itens)
-    print(f"✅ {total} itens encontrados. Enriquecendo com TMDB (40 por vez)...")
+    logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo com TMDB...")
 
-    catalogo = []
-    falhas = []
+    catalogo, falhas = [], []
     semaforo = asyncio.Semaphore(40)
     concluidos = 0
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}) as client:
-        tasks = [processar_item(client, it, semaforo) for it in itens]
-        
+        tasks = [processar_item(client, it, semaforo, concluidos, total) for it in itens]
         for future in asyncio.as_completed(tasks):
             res = await future
             concluidos += 1
-            if res["status"] == "success":
-                catalogo.append(res["data"])
-                print(f"[{concluidos}/{total}] ✅ {res['data'].get('title', 'Sem Nome')}")
-            else:
-                falhas.append(res["data"])
-                print(f"[{concluidos}/{total}] ❌ Falhou: {res['data']['nome_original'][:40]}")
+            if res["status"] == "success": catalogo.append(res["data"])
+            else: falhas.append(res["data"])
             
-            if concluidos % 100 == 0:
+            if concluidos % 500 == 0:
+                logs.adicionar_log(f"[{concluidos}/{total}] Processados...")
                 _salvar_json(catalogo, ARQUIVO_CATALOGO)
                 _salvar_json(falhas, ARQUIVO_FALHAS)
 
     _salvar_json(catalogo, ARQUIVO_CATALOGO)
     _salvar_json(falhas, ARQUIVO_FALHAS)
-    print(f"\n🏁 Concluído! {len(catalogo)} sucessos, {len(falhas)} falhas.")
-    print(f"Arquivos salvos em: {CACHE_DIR}")
-
-if __name__ == "__main__":
-    asyncio.run(rodar_importacao())
+    logs.adicionar_log(f"🏁 Download e enriquecimento concluídos! {len(catalogo)} sucessos.")

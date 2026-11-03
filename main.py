@@ -11,12 +11,12 @@ from sqlalchemy import or_
 
 from config import *
 from info import fetch_movie_info, fetch_series_info
-import home as home_module # ⚡ Importa o módulo inteiro para limpar o cache corretamente
+import home as home_module
 from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy, slugify
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
-from iptv_catalog import rodar_importacao
 import iptv_catalog
+import logs
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router, disparar_push_geral
 import parser as iptv_parser
@@ -26,14 +26,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(notificacoes_router)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-_HOME_CACHE, _HOME_CACHE_TS = {}, 0.0
-_SYNC_ATIVO = False
-
 def _stats(db: Session = None) -> dict:
     close_db = False
     if not db:
-        db = SessionLocal()
-        close_db = True
+        db = SessionLocal(); close_db = True
     try:
         return {"total_filmes": db.query(FilmeDB).count(), "total_series": db.query(SerieDB).count(), "total_canais": db.query(CanalDB).count(), "total_falhas": db.query(FalhaDB).count()}
     finally:
@@ -54,15 +50,7 @@ def _serializar_detalhes(item):
     slug = item.slug or slugify(item.title or "", item.year)
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
-    return {
-        "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany,
-        "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title,
-        "slug": slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description,
-        "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg,
-        "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium,
-        "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating,
-        "url_stream": url_proxy, "url_stream_direto": item.url
-    }
+    return {"iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, "slug": slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description, "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, "url_stream": url_proxy, "url_stream_direto": item.url}
 
 async def _get_serie_completa(s: SerieDB):
     base_data = _serializar_detalhes(s)
@@ -76,7 +64,7 @@ async def _get_serie_completa(s: SerieDB):
             info_iptv["type"] = "series"
             if "episodios" in info_iptv: info_iptv["episodes"] = info_iptv["episodios"]
             return info_iptv
-    except Exception as e: print(f"[API] Erro ao buscar episódios no IPTV para {s.title}: {e}")
+    except Exception as e: print(f"[API] Erro série {s.title}: {e}")
     return base_data
 
 @app.on_event("startup")
@@ -87,61 +75,56 @@ async def startup():
 
 @app.get("/status")
 async def status(db: Session = Depends(get_db)):
-    return {"stats": _stats(db), "sync_ativo": _SYNC_ATIVO, "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}}
+    return {"stats": _stats(db), "sync_ativo": logs.SYNC_ATIVO, "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}}
 
 @app.get("/home")
 async def home(force: bool = False, response: Response = None):
-    global _HOME_CACHE, _HOME_CACHE_TS
     db = SessionLocal()
     try:
-        # ⚡ AVISA O NAVEGADOR PARA NÃO GUARDAR O CACHE DA HOME
         if response: response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        
-        if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < 300: return _HOME_CACHE
-        _HOME_CACHE = await home_module.build_home_async(db, force=force)
-        _HOME_CACHE_TS = time.time()
-        return _HOME_CACHE
+        return await home_module.build_home_async(db, force=force)
     finally: db.close()
+
+async def _task_importar():
+    try:
+        await iptv_catalog.rodar_importacao()
+        logs.adicionar_log("💾 Inserindo dados no Banco...")
+        importar_catalogo()
+        _rebuild_slugs()
+        home_module.limpar_cache()
+        logs.adicionar_log("✅ Sincronização 100% concluída!")
+        await manager.broadcast("catalogo_sincronizado", _stats())
+    except Exception as e:
+        logs.adicionar_log(f"❌ Erro fatal: {str(e)}")
+    finally:
+        logs.finalizar_sync()
 
 @app.post("/admin/wipe-all")
 async def admin_wipe_all():
-    global _SYNC_ATIVO, _HOME_CACHE, _HOME_CACHE_TS
-    if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a sincronização terminar."}
-    _SYNC_ATIVO = True
+    if logs.SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a sincronização terminar."}
+    logs.iniciar_sync()
     try:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         limpar_proxy()
-        
-        # ⚡ LIMPA O CACHE DO MAIN.PY E DO HOME.PY
-        _HOME_CACHE = {}
-        _HOME_CACHE_TS = 0.0
         home_module.limpar_cache()
-        
-        return {"ok": True, "msg": "Banco de dados e cache limpos com sucesso."}
+        logs.adicionar_log("✅ Banco de dados e cache limpos.")
+        return {"ok": True, "msg": "Banco limpo."}
     finally:
-        _SYNC_ATIVO = False
+        logs.finalizar_sync()
 
 @app.post("/admin/importar-catalogo")
 async def admin_importar_catalogo():
-    global _SYNC_ATIVO, _HOME_CACHE, _HOME_CACHE_TS
-    if _SYNC_ATIVO: return {"ok": False, "msg": "Já em andamento."}
-    _SYNC_ATIVO = True
-    try:
-        await rodar_importacao()
-        sucesso = importar_catalogo()
-        _rebuild_slugs()
-        
-        # ⚡ LIMPA O CACHE AO IMPORTAR TAMBÉM
-        _HOME_CACHE = {}
-        _HOME_CACHE_TS = 0.0
-        home_module.limpar_cache()
-        
-        await manager.broadcast("catalogo_sincronizado", _stats())
-        return {"ok": sucesso, "msg": "Catálogo completo sincronizado!" if sucesso else "Erro."}
-    finally:
-        _SYNC_ATIVO = False
+    if logs.SYNC_ATIVO: return {"ok": False, "msg": "Já em andamento."}
+    logs.iniciar_sync()
+    asyncio.create_task(_task_importar())
+    return {"ok": True, "msg": "Iniciado em background"}
 
+@app.get("/admin/importar-catalogo/status")
+async def status_importacao():
+    return {"ativo": logs.SYNC_ATIVO, "logs": logs.IMPORT_LOGS}
+
+# ================= ROTAS DE SUPORTE =================
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
     q_norm = iptv_parser._clean_name(q).lower()
