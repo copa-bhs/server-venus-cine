@@ -55,15 +55,6 @@ def _rebuild_slugs():
                         "canais": [{"id": c.iptv_id, "url": c.url, "titulo": c.title} for c in canais]})
     finally: db.close()
 
-def _serializar_leve(item):
-    try: generos = json.loads(item.genres) if item.genres else []
-    except: generos = []
-    return {
-        "iptv_id": str(item.iptv_id), "title": item.title, "poster": item.poster, "backdrop": item.backdrop,
-        "logo": item.logo, "year": item.year, "rating_avg": item.rating_avg, "age_rating": item.age_rating,
-        "genres": generos, "type": item.type
-    }
-
 def _serializar_detalhes(item):
     """Versão COMPLETA com link de vídeo e sinopse."""
     try: generos = json.loads(item.genres) if item.genres else []
@@ -81,6 +72,35 @@ def _serializar_detalhes(item):
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating,
         "url_stream": url_proxy, "url_stream_direto": item.url
     }
+
+# ⚡ FUNÇÃO QUE JUNTA O BANCO DE DADOS COM OS EPISÓDIOS DO IPTV
+async def _get_serie_completa(s: SerieDB):
+    base_data = _serializar_detalhes(s)
+    try:
+        # Busca os episódios ao vivo no servidor IPTV
+        info_iptv = await fetch_series_info(str(s.iptv_id))
+        if info_iptv:
+            # Substitui os dados pobres do IPTV pelos dados ricos do banco
+            info_iptv["title"] = base_data["title"]
+            info_iptv["description"] = base_data["description"]
+            info_iptv["poster"] = base_data["poster"]
+            info_iptv["backdrop"] = base_data["backdrop"]
+            info_iptv["logo"] = base_data["logo"]
+            info_iptv["rating_avg"] = base_data["rating_avg"]
+            info_iptv["age_rating"] = base_data["age_rating"]
+            info_iptv["genres"] = base_data["genres"]
+            info_iptv["type"] = "series"
+            
+            # Garante compatibilidade do nome do array de episódios para o app
+            if "episodios" in info_iptv:
+                info_iptv["episodes"] = info_iptv["episodios"]
+                
+            return info_iptv
+    except Exception as e:
+        print(f"[API] Erro ao buscar episódios no IPTV para {s.title}: {e}")
+        
+    # Se o IPTV falhar, retorna só o que tem no banco (evita a tela preta)
+    return base_data
 
 @app.on_event("startup")
 async def startup():
@@ -274,12 +294,12 @@ async def editar_serie(item_id: str, background_tasks: BackgroundTasks, titulo: 
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_leve(it) for it in items]}
+    return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
 
 @app.get("/series")
 def listar_series(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(SerieDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_leve(it) for it in items]}
+    return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
 
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
@@ -295,17 +315,19 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
-# ⚡ ROTAS DE INFO CORRIGIDAS (BUSCA NOS DOIS BANCOS)
+# ⚡ ROTAS DE INFO CORRIGIDAS E BLINDADAS
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
     # Tenta achar em Filmes
     f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
     if f: return _serializar_detalhes(f)
-    # Se não achar, tenta achar em Séries (para evitar erro de categoria do app)
+    
+    # Se não achar, tenta achar em Séries (evita erro de categoria do app)
     s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
-    if s: return _serializar_detalhes(s)
-    # Se não achar em nenhum, busca externo
+    if s: return await _get_serie_completa(s)
+    
+    # Fallback externo
     return await fetch_movie_info(item_id)
 
 @app.get("/info/serie/{item_id}")
@@ -313,11 +335,13 @@ async def info_filme(item_id: str, db: Session = Depends(get_db)):
 async def info_serie(item_id: str, db: Session = Depends(get_db)):
     # Tenta achar em Séries
     s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
-    if s: return _serializar_detalhes(s)
-    # Se não achar, tenta achar em Filmes
+    if s: return await _get_serie_completa(s)
+    
+    # Se não achar, tenta achar em Filmes (evita erro)
     f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
     if f: return _serializar_detalhes(f)
-    # Se não achar, busca externo
+    
+    # Fallback externo
     return await fetch_series_info(item_id)
 
 @app.get("/admin/slider")
