@@ -2,7 +2,8 @@ import asyncio, json, secrets, time, re, unicodedata
 from pathlib import Path
 from typing import Optional
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks
+# ⚡ CORREÇÃO: Response importado corretamente
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -113,11 +114,12 @@ async def admin_wipe_all():
     finally:
         logs.finalizar_sync()
 
+# ⚡ Usando BackgroundTasks do FastAPI para segurança total
 @app.post("/admin/importar-catalogo")
-async def admin_importar_catalogo():
+async def admin_importar_catalogo(background_tasks: BackgroundTasks):
     if logs.SYNC_ATIVO: return {"ok": False, "msg": "Já em andamento."}
     logs.iniciar_sync()
-    asyncio.create_task(_task_importar())
+    background_tasks.add_task(_task_importar)
     return {"ok": True, "msg": "Iniciado em background"}
 
 @app.get("/admin/importar-catalogo/status")

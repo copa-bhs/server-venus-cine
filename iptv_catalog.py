@@ -5,7 +5,7 @@ import time
 import asyncio
 import httpx
 from pathlib import Path
-import logs # ⚡ Importa o gerenciador de logs
+import logs
 
 from config import (
     TMDB_API_KEY, FANART_API_KEY, FANART_LANGUAGE,
@@ -102,7 +102,7 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
     except Exception as e:
         return None
 
-async def processar_item(client, item, semaforo, concluidos, total):
+async def processar_item(client, item, semaforo):
     async with semaforo:
         nome_limpo = item["titulo"]
         tmdb_id = await _buscar_tmdb(client, nome_limpo, item["tipo"], item.get("ano"))
@@ -119,8 +119,6 @@ async def processar_item(client, item, semaforo, concluidos, total):
             meta = await _obter_detalhes_tmdb(client, tmdb_id, item["tipo"])
             if meta:
                 meta["audio_type"] = item.get("audio_type", "dubbed")
-                if concluidos % 50 == 0:
-                    logs.adicionar_log(f"[{concluidos}/{total}] ✅ Enriquecido: {meta.get('title')}")
                 return {"status": "success", "data": {"iptv_id": item["id"], "stream_type": item["tipo"], "coletany": item.get("categoria", "Desconhecida"), "url": item.get("url", ""), **meta}}
         
         return {"status": "fail", "data": {"iptv_id": item["id"], "nome_original": item.get("nome_bruto") or item["titulo"], "tipo": item["tipo"]}}
@@ -136,21 +134,20 @@ async def rodar_importacao():
 
     catalogo, falhas = [], []
     semaforo = asyncio.Semaphore(40)
-    concluidos = 0
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}) as client:
-        tasks = [processar_item(client, it, semaforo, concluidos, total) for it in itens]
-        for future in asyncio.as_completed(tasks):
-            res = await future
-            concluidos += 1
-            if res["status"] == "success": catalogo.append(res["data"])
-            else: falhas.append(res["data"])
+        # ⚡ CORREÇÃO CRÍTICA: Processa em lotes de 100 para não estourar a memória da VPS
+        for i in range(0, total, 100):
+            chunk = itens[i:i+100]
+            tasks = [processar_item(client, it, semaforo) for it in chunk]
+            results = await asyncio.gather(*tasks)
             
-            if concluidos % 500 == 0:
-                logs.adicionar_log(f"[{concluidos}/{total}] Processados...")
-                _salvar_json(catalogo, ARQUIVO_CATALOGO)
-                _salvar_json(falhas, ARQUIVO_FALHAS)
+            for res in results:
+                if res["status"] == "success": catalogo.append(res["data"])
+                else: falhas.append(res["data"])
+            
+            logs.adicionar_log(f"[{min(i+100, total)}/{total}] Processados e salvos no cache...")
+            _salvar_json(catalogo, ARQUIVO_CATALOGO)
+            _salvar_json(falhas, ARQUIVO_FALHAS)
 
-    _salvar_json(catalogo, ARQUIVO_CATALOGO)
-    _salvar_json(falhas, ARQUIVO_FALHAS)
     logs.adicionar_log(f"🏁 Download e enriquecimento concluídos! {len(catalogo)} sucessos.")
