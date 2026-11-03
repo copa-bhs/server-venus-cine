@@ -93,7 +93,7 @@ async def home(force: bool = False):
         return _HOME_CACHE
     finally: db.close()
 
-# --- ROTAS ADMIN (CORRIGIDAS) ---
+# --- ROTAS ADMIN ---
 @app.post("/admin/wipe-all")
 async def admin_wipe_all():
     global _SYNC_ATIVO
@@ -122,7 +122,7 @@ async def admin_importar_catalogo():
     finally:
         _SYNC_ATIVO = False
 
-# --- ROTAS IPTV (BUSCA E ADIÇÃO) ---
+# --- ROTAS IPTV ---
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
     q_norm = iptv_parser._clean_name(q).lower()
@@ -141,11 +141,8 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
         if not sid or q_norm not in nome.lower(): continue
         
         resultados.append({
-            "id": sid,
-            "titulo": iptv_parser._clean_name(nome),
-            "capa": item.get("stream_icon") or item.get("cover"),
-            "ano": iptv_parser._extract_year(nome),
-            "tipo": "movie" if tipo == "filme" else "tv",
+            "id": sid, "titulo": iptv_parser._clean_name(nome), "capa": item.get("stream_icon") or item.get("cover"),
+            "ano": iptv_parser._extract_year(nome), "tipo": "movie" if tipo == "filme" else "tv",
             "ja_existe": sid in existentes,
             "url": f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.mp4" if tipo == "filme" else ""
         })
@@ -153,18 +150,14 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
 
 @app.get("/admin/iptv/recentes")
 async def admin_iptv_recentes(db: Session = Depends(get_db)):
-    # Puxa as listas completas do IPTV
     filmes = await iptv_parser.fetch_filmes()
     series = await iptv_parser.fetch_series()
     
-    # ⚡ ORDENA PELA DATA DE ADIÇÃO (os mais novos primeiro)
     filmes.sort(key=lambda x: x.get("added", 0), reverse=True)
     series.sort(key=lambda x: x.get("added", 0), reverse=True)
 
-    # Pega os 20 mais recentes de cada
     recentes = filmes[:20] + series[:20]
 
-    # Verifica o que já está no banco para não duplicar
     existentes_f = {f.iptv_id for f in db.query(FilmeDB.iptv_id).all()}
     existentes_s = {s.iptv_id for s in db.query(SerieDB.iptv_id).all()}
 
@@ -173,17 +166,10 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
         iptv_id = str(item["id"])
         tipo = item["tipo"]
         ja_existe = (iptv_id in existentes_f) if tipo == "movie" else (iptv_id in existentes_s)
-
         resultados.append({
-            "id": iptv_id,
-            "titulo": item["titulo"],
-            "capa": item.get("capa"),
-            "ano": item.get("ano"),
-            "tipo": tipo,
-            "ja_existe": ja_existe,
-            "url": item.get("url", "")
+            "id": iptv_id, "titulo": item["titulo"], "capa": item.get("capa"), "ano": item.get("ano"),
+            "tipo": tipo, "ja_existe": ja_existe, "url": item.get("url", "")
         })
-        
     return {"items": resultados}
 
 @app.post("/admin/iptv/adicionar")
@@ -196,9 +182,10 @@ async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
     if tipo == "tv" and db.query(SerieDB).filter(SerieDB.iptv_id == iptv_id).first():
         return {"ok": False, "msg": "Já existe no banco."}
 
-    # Enriquecer esse único item com o TMDB
-    tmdb_id = await iptv_catalog._buscar_tmdb(None, payload["titulo"], tipo, payload.get("ano"))
-    meta = await iptv_catalog._obter_detalhes_tmdb(None, tmdb_id, tipo) if tmdb_id else None
+    # ⚡ ENRIQUECIMENTO REAL COM TMDB E FANART
+    async with httpx.AsyncClient(timeout=30) as client:
+        tmdb_id = await iptv_catalog._buscar_tmdb(client, payload["titulo"], tipo, payload.get("ano"))
+        meta = await iptv_catalog._obter_detalhes_tmdb(client, tmdb_id, tipo) if tmdb_id else None
     
     if tipo == "movie":
         novo = FilmeDB(
@@ -212,12 +199,19 @@ async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
         )
         
     if meta:
-        novo.tmdb_id = meta.get("tmdb_id"); novo.imdb_id = meta.get("imdb_id")
-        novo.title = meta.get("title"); novo.original_title = meta.get("original_title")
-        novo.slug = meta.get("slug"); novo.duration = meta.get("duration")
-        novo.description = meta.get("description"); novo.poster = meta.get("poster")
-        novo.logo = meta.get("logo"); novo.backdrop = meta.get("backdrop")
-        novo.rating_avg = meta.get("rating_avg"); novo.rating_count = meta.get("rating_count")
+        # Sobrescreve com os dados ricos do TMDB
+        novo.tmdb_id = meta.get("tmdb_id")
+        novo.imdb_id = meta.get("imdb_id")
+        novo.title = meta.get("title")
+        novo.original_title = meta.get("original_title")
+        novo.slug = meta.get("slug")
+        novo.duration = meta.get("duration")
+        novo.description = meta.get("description")
+        novo.poster = meta.get("poster") or novo.poster
+        novo.logo = meta.get("logo")
+        novo.backdrop = meta.get("backdrop")
+        novo.rating_avg = meta.get("rating_avg", 0)
+        novo.rating_count = meta.get("rating_count", 0)
         novo.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
         novo.age_rating = meta.get("age_rating")
     
@@ -233,9 +227,9 @@ async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
         item_type=tipo
     )
     
-    return {"ok": True, "msg": "Adicionado e notificado!"}
+    return {"ok": True, "msg": "Adicionado, enriquecido e notificado!"}
 
-# ================= OUTRAS ROTAS =================
+# --- OUTRAS ROTAS (Listagens, Info, Slider, Proxy) ---
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
