@@ -11,7 +11,7 @@ from sqlalchemy import or_
 
 from config import *
 from info import fetch_movie_info, fetch_series_info
-from home import build_home_async
+from home import build_home_async, _HOME_CACHE as _HOME_CACHE_HOME
 from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy, slugify
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
@@ -114,29 +114,41 @@ async def home(force: bool = False):
         return _HOME_CACHE
     finally: db.close()
 
+# ⚡ ROTA WIPE-ALL CORRIGIDA (Limpa o cache da memória)
 @app.post("/admin/wipe-all")
 async def admin_wipe_all():
-    global _SYNC_ATIVO
+    global _SYNC_ATIVO, _HOME_CACHE, _HOME_CACHE_TS
     if _SYNC_ATIVO: return {"ok": False, "msg": "Aguarde a sincronização terminar."}
     _SYNC_ATIVO = True
     try:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         limpar_proxy()
+        
+        # ⚡ A MÁGICA ACONTECE AQUI: Limpa o cache do main.py e do home.py
         _HOME_CACHE = {}
-        return {"ok": True, "msg": "Banco de dados limpo com sucesso."}
+        _HOME_CACHE_TS = 0.0
+        _HOME_CACHE_HOME.clear()
+        
+        return {"ok": True, "msg": "Banco de dados e cache limpos com sucesso."}
     finally:
         _SYNC_ATIVO = False
 
 @app.post("/admin/importar-catalogo")
 async def admin_importar_catalogo():
-    global _SYNC_ATIVO
+    global _SYNC_ATIVO, _HOME_CACHE, _HOME_CACHE_TS
     if _SYNC_ATIVO: return {"ok": False, "msg": "Já em andamento."}
     _SYNC_ATIVO = True
     try:
         await rodar_importacao()
         sucesso = importar_catalogo()
         _rebuild_slugs()
+        
+        # Limpa cache para atualizar a home com os novos dados
+        _HOME_CACHE = {}
+        _HOME_CACHE_TS = 0.0
+        _HOME_CACHE_HOME.clear()
+        
         await manager.broadcast("catalogo_sincronizado", _stats())
         return {"ok": sucesso, "msg": "Catálogo completo sincronizado!" if sucesso else "Erro."}
     finally:
@@ -306,24 +318,19 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
-# ⚡ ROTAS DE INFO ESTRITAS (NÃO MISTURA MAIS)
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
-    # Busca APENAS na tabela de Filmes
     f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
     if f: return _serializar_detalhes(f)
-    # Fallback apenas para filmes
     return await fetch_movie_info(item_id)
 
 @app.get("/info/serie/{item_id}")
 @app.get("/info/tv/{item_id}")
 @app.get("/info/series/{item_id}")
 async def info_serie(item_id: str, db: Session = Depends(get_db)):
-    # Busca APENAS na tabela de Séries
     s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
     if s: return await _get_serie_completa(s)
-    # Fallback apenas para séries
     return await fetch_series_info(item_id)
 
 @app.get("/admin/slider")
