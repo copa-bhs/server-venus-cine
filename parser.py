@@ -44,11 +44,30 @@ def _clean_name(name: str) -> str:
 def _clean_category(cat: str) -> str:
     if not cat: return "Geral"
     c = cat.strip()
-    match_ano = re.search(r'\b(19|20)\d{2}\b', c)
-    if match_ano: return match_ano.group(0)
+    
+    # ⚡ 1. Remove prefixos comuns ("FILMES |", "SÉRIES •", etc)
     c = re.sub(r'^\s*(filmes?|s[eé]ries?|canais?|movies?|tv|vod|novelas?|animes?)\s*[•·\-–—:|,]\s*', '', c, flags=re.I)
     c = re.sub(r'^\s*(filmes?|s[eé]ries?|canais?|movies?|tv|vod)\s+', '', c, flags=re.I)
     c = re.sub(r'\s*[•·|/]\s*', ' ', c)
+    
+    # ⚡ 2. Padroniza nomes de streamings conhecidos
+    c_upper = c.upper()
+    if "NETFLIX" in c_upper: return "Netflix"
+    if "AMAZON" in c_upper or "PRIME" in c_upper: return "Amazon Prime"
+    if "DISNEY" in c_upper: return "Disney+"
+    if "APPLE" in c_upper: return "Apple TV"
+    if "GLOBO" in c_upper: return "GloboPlay"
+    if "HBO" in c_upper or "MAX" in c_upper: return "HBO Max"
+    if "PARAMOUNT" in c_upper: return "Paramount+"
+    if "STAR" in c_upper and "PLUS" in c_upper: return "Star+"
+    if "LOOKE" in c_upper: return "Looke"
+    if "TELECINE" in c_upper: return "Telecine"
+    
+    # 3. Se for apenas um ano ou tag genérica, mantém como está (vai ser filtrado no home.py)
+    if re.match(r'^\d{4}$', c): return c
+    if c_upper in ["4K", "FHD", "HD", "SD", "LANÇAMENTOS", "LANCAMENTOS", "FILMES", "SÉRIES"]: return c_upper
+    
+    # 4. Formata em Title Case
     c = re.sub(r'\s+', ' ', c).strip()
     return c.title() or "Geral"
 
@@ -85,7 +104,7 @@ async def fetch_filmes() -> list:
             "categoria": cat_map.get(str(s.get("category_id") or ""), "Geral"),
             "url": f"{IPTV_HOST}/movie/{USERNAME}/{PASSWORD}/{sid}.{ext}",
             "audio_type": detectar_audio_type(nome),
-            "added": int(s.get("added") or 0) # ⚡ Data de adição do IPTV
+            "added": int(s.get("added") or 0)
         })
     filmes.sort(key=lambda x: (x["titulo"] or "").lower())
     return filmes
@@ -108,7 +127,7 @@ async def fetch_series() -> list:
             "categoria": cat_map.get(str(s.get("category_id") or ""), "Geral"),
             "url": "",
             "audio_type": detectar_audio_type(nome),
-            "added": int(s.get("last_modified") or s.get("added") or 0) # ⚡ Data da série
+            "added": int(s.get("last_modified") or s.get("added") or 0)
         })
     result.sort(key=lambda x: (x["titulo"] or "").lower())
     return result
