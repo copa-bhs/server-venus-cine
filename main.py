@@ -2,7 +2,6 @@ import asyncio, json, secrets, time, re, unicodedata
 from pathlib import Path
 from typing import Optional
 import httpx
-# ⚡ CORREÇÃO: Response importado corretamente
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -86,6 +85,25 @@ async def home(force: bool = False, response: Response = None):
         return await home_module.build_home_async(db, force=force)
     finally: db.close()
 
+# ⚡ NOVA ROTA DE CATEGORIAS LIMPA
+@app.get("/categorias")
+def categorias(db: Session = Depends(get_db)):
+    f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
+    s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
+    todas = set(f_cats + s_cats)
+    
+    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+    
+    result = []
+    for cat in todas:
+        if not cat: continue
+        cat_upper = cat.upper()
+        if cat_upper in ignorar or cat.isdigit(): continue
+        result.append(cat)
+        
+    result.sort()
+    return {"filmes": result, "series": result, "todos": result}
+
 async def _task_importar():
     try:
         await iptv_catalog.rodar_importacao()
@@ -114,7 +132,6 @@ async def admin_wipe_all():
     finally:
         logs.finalizar_sync()
 
-# ⚡ Usando BackgroundTasks do FastAPI para segurança total
 @app.post("/admin/importar-catalogo")
 async def admin_importar_catalogo(background_tasks: BackgroundTasks):
     if logs.SYNC_ATIVO: return {"ok": False, "msg": "Já em andamento."}
@@ -126,7 +143,6 @@ async def admin_importar_catalogo(background_tasks: BackgroundTasks):
 async def status_importacao():
     return {"ativo": logs.SYNC_ATIVO, "logs": logs.IMPORT_LOGS}
 
-# ================= ROTAS DE SUPORTE =================
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
     q_norm = iptv_parser._clean_name(q).lower()

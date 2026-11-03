@@ -41,20 +41,6 @@ def _construir_hero(db: Session) -> list:
         })
     return hero
 
-def _obter_categorias(db: Session) -> list:
-    f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
-    s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
-    todas = set(f_cats + s_cats)
-    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
-    result = []
-    for cat in todas:
-        if not cat: continue
-        cat_upper = cat.upper()
-        if cat_upper in ignorar or cat.isdigit(): continue
-        result.append(cat)
-    result.sort()
-    return result[:20]
-
 def _construir_colecoes(db: Session) -> list:
     colecoes = []
     MAX_COLECOES = 12
@@ -99,7 +85,6 @@ def _construir_colecoes(db: Session) -> list:
     add("series_recentes", "🆕 Chegou Agora (Séries)", recentes_s, "serie", "clock")
 
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
-    
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas_cats = set(cats_f + cats_s)
@@ -122,17 +107,17 @@ def _construir_colecoes(db: Session) -> list:
 
 async def build_home_async(db: Session, force: bool = False) -> dict:
     global _HOME_CACHE, _HOME_CACHE_TS
-    
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < CACHE_TTL:
         return _HOME_CACHE
 
     hero = _construir_hero(db)
     colecoes = _construir_colecoes(db)
-    categorias = _obter_categorias(db)
     
     resposta = {
-        "gerado_em": time.time(), "tmdb_ativo": TMDB_ENABLED, "hero": hero, 
-        "categorias": categorias, "colecoes": colecoes,
+        "gerado_em": time.time(), 
+        "tmdb_ativo": TMDB_ENABLED, 
+        "hero": hero, 
+        "colecoes": colecoes,
         "stats": {"total_filmes": db.query(FilmeDB).count(), "total_series": db.query(SerieDB).count()}
     }
 
