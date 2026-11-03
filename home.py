@@ -28,14 +28,11 @@ def _serializar_leve(item):
     }
 
 def _construir_hero(db: Session) -> list:
-    # Mantém a lógica dos slides manuais para o Slider principal
     slides = db.query(SlideDB).filter(SlideDB.ativo == True).order_by(SlideDB.ordem).all()
     hero = []
     for s in slides:
         ref = db.query(FilmeDB).get(s.ref_id) if s.ref_tipo == "filme" else db.query(SerieDB).get(s.ref_id)
         if not ref: continue
-        
-        base = (PUBLIC_BASE_URL or "").rstrip("/")
         
         hero.append({
             "id": str(ref.iptv_id),
@@ -55,10 +52,13 @@ def _construir_hero(db: Session) -> list:
 def _construir_colecoes(db: Session) -> list:
     colecoes = []
     
-    def add(id_, titulo, items, tipo_padrao="misto"):
+    # Função atualizada para receber o nome do ícone em vez do emoji no título
+    def add(id_, titulo, items, tipo_padrao="misto", icon="folder"):
         if not items: return
         colecoes.append({
-            "titulo": titulo,
+            "id": id_,
+            "titulo": titulo, # ⚡ Título limpo, sem emoji
+            "icon": icon,     # ⚡ Ícone para o App renderizar em SVG
             "tipo": tipo_padrao,
             "items": [_serializar_leve(it) for it in items]
         })
@@ -67,46 +67,53 @@ def _construir_colecoes(db: Session) -> list:
     rec_filmes = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year), desc(FilmeDB.rating_avg)).limit(15).all()
     rec_series = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year), desc(SerieDB.rating_avg)).limit(15).all()
     misto_rec = sorted(rec_filmes + rec_series, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True)
-    add("recomendacoes", "🍿 Recomendações Inteligentes para Você", misto_rec[:20], "misto")
+    add("recomendacoes", "Recomendações Inteligentes para Você", misto_rec[:20], "misto", "sparkles")
 
     # 2. Em Alta (Misto, melhores notas)
     top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
     top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
-    add("em_alta", "🔥 Em Alta", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True)[:20], "misto")
+    add("em_alta", "Em Alta", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True)[:20], "misto", "fire")
 
     # 3. Top 10 Filmes
-    add("top10_filmes", "🏆 Top 10 Filmes", top_f[:10], "filme")
+    add("top10_filmes", "Top 10 Filmes", top_f[:10], "filme", "star")
 
     # 4. Top 10 Séries
-    add("top10_series", "🏆 Top 10 Séries", top_s[:10], "serie")
+    add("top10_series", "Top 10 Séries", top_s[:10], "serie", "star")
 
     # 5. Filmes Adicionados Recentemente
     recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(15).all()
-    add("filmes_recentes", "🎬 Filmes Adicionados Recentemente", recentes_f, "filme")
+    add("filmes_recentes", "Filmes Adicionados Recentemente", recentes_f, "filme", "clock")
 
     # 6. Séries Adicionadas Recentemente
     recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(15).all()
-    add("series_recentes", "📺 Séries Adicionadas Recentemente", recentes_s, "serie")
+    add("series_recentes", "Séries Adicionadas Recentemente", recentes_s, "serie", "clock")
 
-    # 7. Coleções por Gênero (Puxando do TMDB JSON)
+    # 7. Coleções por Gênero
     def get_by_genre(genre):
         f = db.query(FilmeDB).filter(FilmeDB.genres.like(f'%{genre}%'), FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
         s = db.query(SerieDB).filter(SerieDB.genres.like(f'%{genre}%'), SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
         return sorted(f + s, key=lambda x: x.rating_avg or 0, reverse=True)[:15]
 
-    add("acao", "💥 Ação e Aventura", get_by_genre("Ação"), "misto")
-    add("comedia", "😂 Comédia", get_by_genre("Comédia"), "misto")
-    add("terror", "👻 Terror e Suspense", get_by_genre("Terror"), "misto")
-    add("animacao", "🎨 Animação e Família", get_by_genre("Animação"), "misto")
+    add("acao", "Ação e Aventura", get_by_genre("Ação"), "misto", "action")
+    add("comedia", "Comédia", get_by_genre("Comédia"), "misto", "comedy")
+    add("terror", "Terror e Suspense", get_by_genre("Terror"), "misto", "horror")
+    add("animacao", "Animação e Família", get_by_genre("Animação"), "misto", "animation")
 
-    # 8. Coleções por Categoria do IPTV (coletany)
-    cats = db.query(FilmeDB.coletany).distinct().limit(5).all()
-    for cat in cats:
-        c_nome = cat[0]
-        if not c_nome or c_nome == "Manual": continue
-        items = db.query(FilmeDB).filter(FilmeDB.coletany == c_nome).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
-        add(f"cat_{c_nome}", f"📁 Coleção {c_nome}", items, "filme")
-
+    # ⚡ 8. FRANQUIAS (Harry Potter, Simpsons, Vingadores, etc.)
+    # Lista de franquias populares para buscar no banco
+    franquias = [
+        "Harry Potter", "Os Simpsons", "Vingadores", "Velozes e Furiosos", 
+        "Missão Impossível", "Resident Evil", "Star Wars", "Homem-Aranha",
+        "O Senhor dos Anéis", "Matrix", "John Wick", "Transformers", "Jurassic"
+    ]
+    
+    for franquia in franquias:
+        # Busca filmes que começam com o nome da franquia
+        items = db.query(FilmeDB).filter(FilmeDB.title.ilike(f"{franquia}%"), FilmeDB.poster.isnot(None)).order_by(FilmeDB.year).all()
+        # Se tiver 2 ou mais filmes, cria a prateleira (ordenado por ano para ficar 1, 2, 3...)
+        if len(items) >= 2:
+            add(f"franquia_{franquia}", f"Coleção {franquia}", items[:20], "filme", "collection")
+            
     return colecoes
 
 async def build_home_async(db: Session, force: bool = False) -> dict:
