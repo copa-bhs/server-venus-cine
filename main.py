@@ -215,7 +215,7 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         db.commit(); db.refresh(item)
     return _serializar_rico(item)
 
-# --- ROTAS DE EDIÇÃO E EXCLUSÃO (COM BACKGROUND TASKS) ---
+# --- ROTAS DE EDIÇÃO E EXCLUSÃO ---
 @app.get("/admin/item/{tipo}/{item_id}")
 def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
@@ -258,7 +258,7 @@ async def editar_filme(
     capa: Optional[UploadFile] = File(None), 
     banner: Optional[UploadFile] = File(None), 
     logo: Optional[UploadFile] = File(None), 
-    notificar: Optional[bool] = Form(False), # ⚡ Flag para saber se notifica
+    notificar: Optional[bool] = Form(False),
     db: Session = Depends(get_db)
 ):
     it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
@@ -364,10 +364,34 @@ async def info_serie(item_id: str, db: Session = Depends(get_db)):
     if s: item_id = s.iptv_id 
     return await fetch_series_info(item_id)
 
+# ⚡ ROTA DO SLIDER CORRIGIDA AQUI
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
     slides = db.query(SlideDB).order_by(SlideDB.ordem).all()
-    return {"items": [{"id": s.id, "ordem": s.ordem, "ref_tipo": s.ref_tipo, "ref_id": s.ref_id, "titulo": s.titulo} for s in slides]}
+    out = []
+    for s in slides:
+        ref = None
+        if s.ref_tipo == "filme":
+            r = db.query(FilmeDB).get(s.ref_id)
+            if r: ref = {"titulo": r.title, "capa": r.poster, "banner": r.backdrop, "ano": r.year}
+        elif s.ref_tipo == "serie":
+            r = db.query(SerieDB).get(s.ref_id)
+            if r: ref = {"titulo": r.title, "capa": r.poster, "banner": r.backdrop, "ano": r.year}
+            
+        out.append({
+            "id": s.id, 
+            "ordem": s.ordem, 
+            "ref_tipo": s.ref_tipo, 
+            "ref_id": s.ref_id, 
+            "titulo": s.titulo or (ref["titulo"] if ref else "?"), 
+            "banner": s.banner or (ref.get("banner") if ref else None), 
+            "capa": ref.get("capa") if ref else None, 
+            "logo": s.logo, 
+            "sinopse": s.sinopse, 
+            "ref": ref, 
+            "ativo": s.ativo
+        })
+    return {"items": out}
 
 @app.post("/admin/slider")
 async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(...), db: Session = Depends(get_db)):
@@ -382,6 +406,27 @@ async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(.
 async def admin_slider_remover(slide_id: int, db: Session = Depends(get_db)):
     s = db.query(SlideDB).get(slide_id)
     if s: db.delete(s); db.commit()
+    return {"ok": True}
+
+@app.put("/admin/slider/{slide_id}")
+async def admin_slider_editar(slide_id: int, titulo: Optional[str] = Form(None), banner: Optional[str] = Form(None), logo: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    s = db.query(SlideDB).get(slide_id)
+    if not s: raise HTTPException(404, "não encontrado")
+    if titulo is not None: s.titulo = titulo or None
+    if banner is not None: s.banner = banner or None
+    if logo is not None: s.logo = logo or None
+    if sinopse is not None: s.sinopse = sinopse or None
+    db.commit()
+    return {"ok": True}
+
+@app.post("/admin/slider/reordenar")
+async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(get_db)):
+    try: ids = [int(x.strip()) for x in ordem.split(",") if x.strip()]
+    except: raise HTTPException(400, "inválido")
+    for i, sid in enumerate(ids):
+        s = db.query(SlideDB).get(sid)
+        if s: s.ordem = i
+    db.commit()
     return {"ok": True}
 
 @app.get("/stream/id/{item_id}")
