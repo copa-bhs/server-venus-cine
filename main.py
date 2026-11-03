@@ -172,44 +172,24 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
         })
     return {"items": resultados}
 
-@app.post("/admin/iptv/adicionar")
-async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
+@app.post("/admin/iptv/preparar")
+async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
+    """Cria o item no banco (sem notificar) para que ele possa ser editado no modal."""
     iptv_id = str(payload.get("id"))
     tipo = payload.get("tipo")
     
-    if tipo == "movie" and db.query(FilmeDB).filter(FilmeDB.iptv_id == iptv_id).first():
-        return {"ok": False, "msg": "Já existe no banco."}
-    if tipo == "tv" and db.query(SerieDB).filter(SerieDB.iptv_id == iptv_id).first():
-        return {"ok": False, "msg": "Já existe no banco."}
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        tmdb_id = await iptv_catalog._buscar_tmdb(client, payload["titulo"], tipo, payload.get("ano"))
-        meta = await iptv_catalog._obter_detalhes_tmdb(client, tmdb_id, tipo) if tmdb_id else None
-    
     if tipo == "movie":
-        novo = FilmeDB(iptv_id=iptv_id, stream_type="movie", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url=payload.get("url", ""), year=payload.get("ano"))
+        item = db.query(FilmeDB).filter(FilmeDB.iptv_id == iptv_id).first()
+        if not item:
+            item = FilmeDB(iptv_id=iptv_id, stream_type="movie", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url=payload.get("url", ""), year=payload.get("ano"))
+            db.add(item); db.commit(); db.refresh(item)
     else:
-        novo = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano"))
-        
-    if meta:
-        novo.tmdb_id = meta.get("tmdb_id"); novo.imdb_id = meta.get("imdb_id")
-        novo.title = meta.get("title"); novo.original_title = meta.get("original_title")
-        novo.slug = meta.get("slug"); novo.duration = meta.get("duration")
-        novo.description = meta.get("description"); novo.poster = meta.get("poster") or novo.poster
-        novo.logo = meta.get("logo"); novo.backdrop = meta.get("backdrop")
-        novo.rating_avg = meta.get("rating_avg", 0); novo.rating_count = meta.get("rating_count", 0)
-        novo.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
-        novo.age_rating = meta.get("age_rating")
-    
-    db.add(novo); db.commit(); db.refresh(novo)
-    _rebuild_slugs()
-    
-    await disparar_push_geral(
-        titulo="🎬 Novo conteúdo adicionado!",
-        corpo=f"O { 'Filme' if tipo == 'movie' else 'Série' } '{novo.title}' acabou de chegar. Clique para assistir!",
-        imagem=novo.poster, item_id=novo.iptv_id, item_type=tipo
-    )
-    return {"ok": True, "msg": "Adicionado, enriquecido e notificado!"}
+        item = db.query(SerieDB).filter(SerieDB.iptv_id == iptv_id).first()
+        if not item:
+            item = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano"))
+            db.add(item); db.commit(); db.refresh(item)
+            
+    return _serializar_rico(item)
 
 # --- ROTA DE SINCRONIZAR TMDB INDIVIDUAL ---
 @app.post("/admin/item/{tipo}/{item_id}/sync-tmdb")
@@ -236,7 +216,73 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         db.commit(); db.refresh(item)
     return _serializar_rico(item)
 
-# --- OUTRAS ROTAS (Listagens, Info, Edição, Slider, Proxy) ---
+# --- ROTAS DE EDIÇÃO E EXCLUSÃO ---
+@app.get("/admin/item/{tipo}/{item_id}")
+def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
+    item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+    if not item: raise HTTPException(404, "Não encontrado")
+    return _serializar_rico(item)
+
+@app.delete("/admin/item/{tipo}/{item_id}")
+def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
+    try:
+        if tipo == "filme": it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+        elif tipo == "serie": it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+        elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
+        
+        if it: 
+            db.delete(it)
+            db.commit()
+        _rebuild_slugs()
+        return {"ok": True, "msg": "Excluído com sucesso"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Erro ao excluir: {str(e)}")
+
+async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
+    if not arq or not arq.filename: return None
+    ext = Path(arq.filename).suffix.lower()
+    nome = f"{secrets.token_hex(8)}{ext}"; destino = UPLOAD_DIR / sub / nome
+    with destino.open("wb") as f:
+        while chunk := await arq.read(1024 * 1024): f.write(chunk)
+    base = PUBLIC_BASE_URL.rstrip("/")
+    return f"{base}/uploads/{sub}/{nome}"
+
+@app.put("/admin/filme/{item_id}")
+async def editar_filme(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+    it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+    if not it: raise HTTPException(404, "Não encontrado")
+    if titulo: it.title = titulo
+    if ano: it.year = ano
+    if categoria: it.coletany = categoria
+    if sinopse: it.description = sinopse
+    if capa: it.poster = await _salvar_upload(capa, "capas")
+    if banner: it.backdrop = await _salvar_upload(banner, "banners")
+    if logo: it.logo = await _salvar_upload(logo, "logos")
+    it.editado = True; db.commit()
+    
+    # ⚡ NOTIFICAÇÃO (Opcional: notificar caso tenha sido editado e salvo manualmente)
+    # await disparar_push_geral(titulo="🎬 Filme Atualizado", corpo=f"'{it.title}' foi atualizado.", imagem=it.poster, item_id=it.iptv_id, item_type="movie")
+    
+    await manager.broadcast("item_editado", {"tipo": "filme", "id": it.id, "titulo": it.title})
+    return {"ok": True, "titulo": it.title}
+
+@app.put("/admin/serie/{item_id}")
+async def editar_serie(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+    it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+    if not it: raise HTTPException(404, "Não encontrado")
+    if titulo: it.title = titulo
+    if ano: it.year = ano
+    if categoria: it.coletany = categoria
+    if sinopse: it.description = sinopse
+    if capa: it.poster = await _salvar_upload(capa, "capas")
+    if banner: it.backdrop = await _salvar_upload(banner, "banners")
+    if logo: it.logo = await _salvar_upload(logo, "logos")
+    it.editado = True; db.commit()
+    await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.title})
+    return {"ok": True, "titulo": it.title}
+
+# --- OUTRAS ROTAS ---
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
@@ -260,51 +306,6 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     if q: query = query.filter(SerieDB.title.ilike(f"%{q}%"))
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_rico(it) for it in items]}
-
-@app.get("/admin/item/{tipo}/{item_id}")
-def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
-    item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
-    if not item: raise HTTPException(404, "Não encontrado")
-    return _serializar_rico(item)
-
-async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
-    if not arq or not arq.filename: return None
-    ext = Path(arq.filename).suffix.lower()
-    nome = f"{secrets.token_hex(8)}{ext}"; destino = UPLOAD_DIR / sub / nome
-    with destino.open("wb") as f:
-        while chunk := await arq.read(1024 * 1024): f.write(chunk)
-    base = PUBLIC_BASE_URL.rstrip("/")
-    return f"{base}/uploads/{sub}/{nome}"
-
-@app.put("/admin/filme/{item_id}")
-async def editar_filme(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
-    it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
-    if not it: raise HTTPException(404, "Não encontrado")
-    if titulo: it.title = titulo
-    if ano: it.year = ano
-    if categoria: it.coletany = categoria
-    if sinopse: it.description = sinopse
-    if capa: it.poster = await _salvar_upload(capa, "capas")
-    if banner: it.backdrop = await _salvar_upload(banner, "banners")
-    if logo: it.logo = await _salvar_upload(logo, "logos")
-    it.editado = True; db.commit()
-    await manager.broadcast("item_editado", {"tipo": "filme", "id": it.id, "titulo": it.title})
-    return {"ok": True, "titulo": it.title}
-
-@app.put("/admin/serie/{item_id}")
-async def editar_serie(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
-    it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
-    if not it: raise HTTPException(404, "Não encontrado")
-    if titulo: it.title = titulo
-    if ano: it.year = ano
-    if categoria: it.coletany = categoria
-    if sinopse: it.description = sinopse
-    if capa: it.poster = await _salvar_upload(capa, "capas")
-    if banner: it.backdrop = await _salvar_upload(banner, "banners")
-    if logo: it.logo = await _salvar_upload(logo, "logos")
-    it.editado = True; db.commit()
-    await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.title})
-    return {"ok": True, "titulo": it.title}
 
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
