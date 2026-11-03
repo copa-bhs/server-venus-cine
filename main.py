@@ -11,7 +11,7 @@ from sqlalchemy import or_
 
 from config import *
 from info import fetch_movie_info, fetch_series_info
-from home import build_home_async
+from home import build_home_async, _serializar_leve
 from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy, slugify
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
@@ -55,12 +55,14 @@ def _rebuild_slugs():
                         "canais": [{"id": c.iptv_id, "url": c.url, "titulo": c.title} for c in canais]})
     finally: db.close()
 
-def _serializar_rico(item):
+def _serializar_detalhes(item):
+    """Versão COMPLETA com link de vídeo. Usada apenas em /info e /admin."""
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
     slug = item.slug or slugify(item.title or "", item.year)
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
+    
     return {
         "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany,
         "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title,
@@ -68,7 +70,7 @@ def _serializar_rico(item):
         "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg,
         "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium,
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating,
-        "url_stream": url_proxy, "url_stream_direto": item.url
+        "url_stream": url_proxy, "url_stream_direto": item.url # ⚡ Link presente apenas aqui
     }
 
 @app.on_event("startup")
@@ -188,7 +190,7 @@ async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
             item = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano"))
             db.add(item); db.commit(); db.refresh(item)
             
-    return _serializar_rico(item)
+    return _serializar_detalhes(item)
 
 # --- ROTA DE SINCRONIZAR TMDB INDIVIDUAL ---
 @app.post("/admin/item/{tipo}/{item_id}/sync-tmdb")
@@ -213,14 +215,14 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         item.age_rating = meta.get("age_rating")
         
         db.commit(); db.refresh(item)
-    return _serializar_rico(item)
+    return _serializar_detalhes(item)
 
 # --- ROTAS DE EDIÇÃO E EXCLUSÃO ---
 @app.get("/admin/item/{tipo}/{item_id}")
 def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
     if not item: raise HTTPException(404, "Não encontrado")
-    return _serializar_rico(item)
+    return _serializar_detalhes(item)
 
 @app.delete("/admin/item/{tipo}/{item_id}")
 def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
@@ -274,6 +276,7 @@ async def editar_filme(
     it.editado = True 
     db.commit()
     _rebuild_slugs()
+    _HOME_CACHE.clear() # Limpa a home para atualizar as prateleiras
     
     if notificar:
         background_tasks.add_task(
@@ -313,6 +316,7 @@ async def editar_serie(
     it.editado = True 
     db.commit()
     _rebuild_slugs()
+    _HOME_CACHE.clear()
     
     if notificar:
         background_tasks.add_task(
@@ -325,36 +329,36 @@ async def editar_serie(
     await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.title})
     return {"ok": True, "titulo": it.title}
 
-# --- OUTRAS ROTAS ---
+# --- OUTRAS ROTAS (USANDO SERIALIZAÇÃO LEVE PARA LISTAS) ---
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_rico(it) for it in items]}
+    return {"page": page, "total_items": total, "items": [_serializar_leve(it) for it in items]}
 
 @app.get("/series")
 def listar_series(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(SerieDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_rico(it) for it in items]}
+    return {"page": page, "total_items": total, "items": [_serializar_leve(it) for it in items]}
 
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(FilmeDB)
     if q: query = query.filter(FilmeDB.title.ilike(f"%{q}%"))
     items = query.offset((page-1)*size).limit(size).all()
-    return {"page": page, "total_items": query.count(), "items": [_serializar_rico(it) for it in items]}
+    return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]} # Admin precisa do link
 
 @app.get("/admin/series")
 def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
     query = db.query(SerieDB)
     if q: query = query.filter(SerieDB.title.ilike(f"%{q}%"))
     items = query.offset((page-1)*size).limit(size).all()
-    return {"page": page, "total_items": query.count(), "items": [_serializar_rico(it) for it in items]}
+    return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
     f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
-    if f: return _serializar_rico(f)
+    if f: return _serializar_detalhes(f) # Retorna com link de vídeo apenas aqui!
     return await fetch_movie_info(item_id)
 
 @app.get("/info/serie/{item_id}")
@@ -364,7 +368,7 @@ async def info_serie(item_id: str, db: Session = Depends(get_db)):
     if s: item_id = s.iptv_id 
     return await fetch_series_info(item_id)
 
-# ⚡ ROTA DO SLIDER CORRIGIDA AQUI
+# Rota de Slider
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
     slides = db.query(SlideDB).order_by(SlideDB.ordem).all()
@@ -379,17 +383,11 @@ def admin_slider_listar(db: Session = Depends(get_db)):
             if r: ref = {"titulo": r.title, "capa": r.poster, "banner": r.backdrop, "ano": r.year}
             
         out.append({
-            "id": s.id, 
-            "ordem": s.ordem, 
-            "ref_tipo": s.ref_tipo, 
-            "ref_id": s.ref_id, 
+            "id": s.id, "ordem": s.ordem, "ref_tipo": s.ref_tipo, "ref_id": s.ref_id, 
             "titulo": s.titulo or (ref["titulo"] if ref else "?"), 
             "banner": s.banner or (ref.get("banner") if ref else None), 
             "capa": ref.get("capa") if ref else None, 
-            "logo": s.logo, 
-            "sinopse": s.sinopse, 
-            "ref": ref, 
-            "ativo": s.ativo
+            "logo": s.logo, "sinopse": s.sinopse, "ref": ref, "ativo": s.ativo
         })
     return {"items": out}
 
@@ -400,12 +398,14 @@ async def admin_slider_adicionar(ref_tipo: str = Form(...), ref_id: str = Form(.
     ultimo = db.query(SlideDB).order_by(SlideDB.ordem.desc()).first(); proxima = (ultimo.ordem + 1) if ultimo else 0
     novo = SlideDB(ordem=proxima, ref_tipo=ref_tipo, ref_id=item_db.id, ativo=True)
     db.add(novo); db.commit(); db.refresh(novo)
+    _HOME_CACHE.clear()
     return {"ok": True, "id": novo.id}
 
 @app.delete("/admin/slider/{slide_id}")
 async def admin_slider_remover(slide_id: int, db: Session = Depends(get_db)):
     s = db.query(SlideDB).get(slide_id)
     if s: db.delete(s); db.commit()
+    _HOME_CACHE.clear()
     return {"ok": True}
 
 @app.put("/admin/slider/{slide_id}")
@@ -417,6 +417,7 @@ async def admin_slider_editar(slide_id: int, titulo: Optional[str] = Form(None),
     if logo is not None: s.logo = logo or None
     if sinopse is not None: s.sinopse = sinopse or None
     db.commit()
+    _HOME_CACHE.clear()
     return {"ok": True}
 
 @app.post("/admin/slider/reordenar")
@@ -427,6 +428,7 @@ async def admin_slider_reordenar(ordem: str = Form(...), db: Session = Depends(g
         s = db.query(SlideDB).get(sid)
         if s: s.ordem = i
     db.commit()
+    _HOME_CACHE.clear()
     return {"ok": True}
 
 @app.get("/stream/id/{item_id}")
