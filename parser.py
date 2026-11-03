@@ -16,13 +16,9 @@ _PREFIXO_RE = re.compile(r'^\s*(filmes?|s[eé]ries?|movies?|vod|novelas?|animes?
 _SEPARADOR_FIM_RE = re.compile(r'\s*[\-–—|•·]\s*(?:\d{4}|\d+p|dual|dub|leg|hd|sd|4k|uhd|fhd|web|bluray|bdrip|x26\d|h26\d|hevc)\b.*$', re.I)
 
 def detectar_audio_type(nome: str) -> str:
-    """Detecta se o áudio é dublado, legendado ou nacional baseado no nome bruto."""
     nome_upper = nome.upper()
-    if "NACIONAL" in nome_upper:
-        return "national"
-    if re.search(r'\b(LEG|LEGENDADO|LEGENDAS?)\b', nome_upper):
-        return "subtitled"
-    # Se não achar nada, assume dublado (padrão do mercado brasileiro)
+    if "NACIONAL" in nome_upper: return "national"
+    if re.search(r'\b(LEG|LEGENDADO|LEGENDAS?)\b', nome_upper): return "subtitled"
     return "dubbed"
 
 def _clean_name(name: str) -> str:
@@ -88,7 +84,8 @@ async def fetch_filmes() -> list:
             "nome_bruto": nome, "capa": s.get("stream_icon") or s.get("cover") or None, "ano": _extract_year(nome),
             "categoria": cat_map.get(str(s.get("category_id") or ""), "Geral"),
             "url": f"{IPTV_HOST}/movie/{USERNAME}/{PASSWORD}/{sid}.{ext}",
-            "audio_type": detectar_audio_type(nome)
+            "audio_type": detectar_audio_type(nome),
+            "added": int(s.get("added") or 0) # ⚡ Data de adição do IPTV
         })
     filmes.sort(key=lambda x: (x["titulo"] or "").lower())
     return filmes
@@ -110,7 +107,8 @@ async def fetch_series() -> list:
             "ano": _extract_year(release) or _extract_year(nome),
             "categoria": cat_map.get(str(s.get("category_id") or ""), "Geral"),
             "url": "",
-            "audio_type": detectar_audio_type(nome)
+            "audio_type": detectar_audio_type(nome),
+            "added": int(s.get("last_modified") or s.get("added") or 0) # ⚡ Data da série
         })
     result.sort(key=lambda x: (x["titulo"] or "").lower())
     return result

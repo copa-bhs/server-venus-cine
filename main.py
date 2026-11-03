@@ -157,9 +157,12 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
     filmes = await iptv_parser.fetch_filmes()
     series = await iptv_parser.fetch_series()
     
-    # Pega os últimos 20 de cada (geralmente os mais novos ficam no final da lista)
-    recentes = filmes[-20:] + series[-20:]
-    recentes.reverse() # Inverte para os mais novos aparecerem primeiro
+    # ⚡ ORDENA PELA DATA DE ADIÇÃO (os mais novos primeiro)
+    filmes.sort(key=lambda x: x.get("added", 0), reverse=True)
+    series.sort(key=lambda x: x.get("added", 0), reverse=True)
+
+    # Pega os 20 mais recentes de cada
+    recentes = filmes[:20] + series[:20]
 
     # Verifica o que já está no banco para não duplicar
     existentes_f = {f.iptv_id for f in db.query(FilmeDB.iptv_id).all()}
@@ -168,7 +171,7 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
     resultados = []
     for item in recentes:
         iptv_id = str(item["id"])
-        tipo = item["tipo"] # "movie" ou "tv"
+        tipo = item["tipo"]
         ja_existe = (iptv_id in existentes_f) if tipo == "movie" else (iptv_id in existentes_s)
 
         resultados.append({
