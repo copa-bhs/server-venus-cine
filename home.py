@@ -7,11 +7,14 @@ from config import TMDB_ENABLED, PUBLIC_BASE_URL
 
 _HOME_CACHE = {}
 _HOME_CACHE_TS = 0
-CACHE_TTL = 900  # 15 minutos
+CACHE_TTL = 900
 
 def _serializar_leve(item):
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
+    
+    # ⚡ FORÇA O TIPO CORRETO
+    tipo_final = "movie" if item.stream_type == "movie" else "series"
     
     return {
         "iptv_id": str(item.iptv_id),
@@ -23,7 +26,7 @@ def _serializar_leve(item):
         "rating_avg": item.rating_avg,
         "age_rating": item.age_rating,
         "genres": generos,
-        "type": item.type
+        "type": tipo_final
     }
 
 def _construir_hero(db: Session) -> list:
@@ -53,8 +56,6 @@ def _construir_colecoes(db: Session) -> list:
     
     def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=10):
         if not items: return
-        
-        # Remove duplicados
         vistos = set()
         items_unicos = []
         for it in items:
@@ -66,37 +67,27 @@ def _construir_colecoes(db: Session) -> list:
         if len(items_unicos) < min_itens: return 
         
         colecoes.append({
-            "id": id_,
-            "titulo": titulo, # Nome bonito
-            "icon": icon,
-            "tipo": tipo_padrao,
+            "id": id_, "titulo": titulo, "icon": icon, "tipo": tipo_padrao,
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
-    # 1. Recomendações
     rec_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(30).all()
     rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(30).all()
     add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
 
-    # 2. Em Alta
     top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(30).all()
     top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(30).all()
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
 
-    # 3. Top 10 Filmes
     add("top10_filmes", "🏆 As Melhores Críticas (Filmes)", top_f, "filme", "star", min_itens=10)
-
-    # 4. Top 10 Séries
     add("top10_series", "🏆 As Melhores Críticas (Séries)", top_s, "serie", "star", min_itens=10)
 
-    # 5. Recentes
     recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(30).all()
     add("filmes_recentes", "🆕 Chegou Agora no Catálogo (Filmes)", recentes_f, "filme", "clock")
 
     recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(30).all()
     add("series_recentes", "🆕 Chegou Agora no Catálogo (Séries)", recentes_s, "serie", "clock")
 
-    # 6. Gêneros com nomes mais atraentes
     def get_by_genre(genre):
         f = db.query(FilmeDB).filter(FilmeDB.genres.like(f'%{genre}%'), FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(30).all()
         s = db.query(SerieDB).filter(SerieDB.genres.like(f'%{genre}%'), SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(30).all()
@@ -107,7 +98,6 @@ def _construir_colecoes(db: Session) -> list:
     add("terror", "👻 Prepare o Coração: Terror e Suspense", get_by_genre("Terror"), "misto", "horror")
     add("animacao", "🎨 Mundo Mágico: Animação e Família", get_by_genre("Animação"), "misto", "animation")
 
-    # ⚡ 7. FRANQUIAS COM NOMES ÉPICOS
     franquias_config = {
         "Harry Potter": "⚡ Bem-vindo a Hogwarts: A Saga Harry Potter",
         "Os Simpsons": "🍩 A Família Amarela Mais Famosa: Os Simpsons",
@@ -126,9 +116,6 @@ def _construir_colecoes(db: Session) -> list:
 
     for franquia, nome_epico in franquias_config.items():
         items = db.query(FilmeDB).filter(FilmeDB.title.ilike(f"{franquia}%"), FilmeDB.poster.isnot(None)).order_by(FilmeDB.year).all()
-        
-        # ⚠️ AQUI: Franquias precisam de no mínimo 3 itens para aparecer.
-        # (Coloquei 3 porque Harry Potter tem 8 filmes e Senhor dos Anéis tem 3).
         add(f"franquia_{franquia}", nome_epico, items, "filme", "collection", min_itens=3)
             
     return colecoes
