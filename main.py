@@ -149,7 +149,39 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
             "ja_existe": sid in existentes,
             "url": f"{IPTV_HOST}/movie/{IPTV_USERNAME}/{IPTV_PASSWORD}/{sid}.mp4" if tipo == "filme" else ""
         })
-    return {"items": resultados[:100]} # Retorna até 100 itens encontrados
+    return {"items": resultados[:100]}
+
+@app.get("/admin/iptv/recentes")
+async def admin_iptv_recentes(db: Session = Depends(get_db)):
+    # Puxa as listas completas do IPTV
+    filmes = await iptv_parser.fetch_filmes()
+    series = await iptv_parser.fetch_series()
+    
+    # Pega os últimos 20 de cada (geralmente os mais novos ficam no final da lista)
+    recentes = filmes[-20:] + series[-20:]
+    recentes.reverse() # Inverte para os mais novos aparecerem primeiro
+
+    # Verifica o que já está no banco para não duplicar
+    existentes_f = {f.iptv_id for f in db.query(FilmeDB.iptv_id).all()}
+    existentes_s = {s.iptv_id for s in db.query(SerieDB.iptv_id).all()}
+
+    resultados = []
+    for item in recentes:
+        iptv_id = str(item["id"])
+        tipo = item["tipo"] # "movie" ou "tv"
+        ja_existe = (iptv_id in existentes_f) if tipo == "movie" else (iptv_id in existentes_s)
+
+        resultados.append({
+            "id": iptv_id,
+            "titulo": item["titulo"],
+            "capa": item.get("capa"),
+            "ano": item.get("ano"),
+            "tipo": tipo,
+            "ja_existe": ja_existe,
+            "url": item.get("url", "")
+        })
+        
+    return {"items": resultados}
 
 @app.post("/admin/iptv/adicionar")
 async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
@@ -200,46 +232,7 @@ async def admin_iptv_adicionar(payload: dict, db: Session = Depends(get_db)):
     
     return {"ok": True, "msg": "Adicionado e notificado!"}
 
-# --- SINCRONIZAR RECENTES DO IPTV ---
-@app.post("/admin/sincronizar-recentes")
-async def admin_sincronizar_recentes():
-    # Puxa os 30 últimos filmes e 30 últimas séries adicionadas no IPTV
-    filmes = await iptv_parser.fetch_filmes()
-    series = await iptv_parser.fetch_series()
-    
-    # O IPTV geralmente adiciona no final da lista. Pega os últimos 20 de cada.
-    recentes = filmes[-20:] + series[-20:]
-    adicionados = 0
-    
-    db = SessionLocal()
-    try:
-        for item in recentes:
-            iptv_id = item["id"]
-            if db.query(FilmeDB).filter(FilmeDB.iptv_id == iptv_id).first() or db.query(SerieDB).filter(SerieDB.iptv_id == iptv_id).first():
-                continue
-                
-            tmdb_id = await iptv_catalog._buscar_tmdb(None, item["titulo"], item["tipo"], item.get("ano"))
-            meta = await iptv_catalog._obter_detalhes_tmdb(None, tmdb_id, item["tipo"]) if tmdb_id else None
-            
-            if item["tipo"] == "movie":
-                novo = FilmeDB(iptv_id=iptv_id, stream_type="movie", coletany=item["categoria"], title=item["titulo"], url=item["url"])
-            else:
-                novo = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany=item["categoria"], title=item["titulo"])
-            
-            if meta:
-                novo.title = meta.get("title"); novo.poster = meta.get("poster"); novo.backdrop = meta.get("backdrop")
-                novo.description = meta.get("description"); novo.rating_avg = meta.get("rating_avg", 0)
-                novo.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
-                novo.year = meta.get("year"); novo.tmdb_id = meta.get("tmdb_id")
-                
-            db.add(novo); adicionados += 1
-        db.commit()
-    finally: db.close()
-    
-    _rebuild_slugs()
-    return {"ok": True, "adicionados": adicionados, "msg": f"{adicionados} itens recentes importados do IPTV!"}
-
-# ================= OUTRAS ROTAS (Mantidas iguais) =================
+# ================= OUTRAS ROTAS =================
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
@@ -297,6 +290,25 @@ async def admin_slider_remover(slide_id: int, db: Session = Depends(get_db)):
     s = db.query(SlideDB).get(slide_id)
     if s: db.delete(s); db.commit()
     return {"ok": True}
+
+# --- ROTAS DE STREAMING (PROXY) ---
+@app.get("/stream/id/{item_id}")
+async def proxy_por_id(item_id: str, request: Request):
+    cid = item_id
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8"):
+        if cid.lower().endswith(ext): cid = cid[:-len(ext)]; break
+    item = get_by_id(cid)
+    if not item: raise HTTPException(404, "não encontrado")
+    return await stream_proxy(item["url"], request)
+
+@app.get("/stream/{slug_path:path}")
+async def proxy_por_slug(slug_path: str, request: Request):
+    slug = slug_path
+    for ext in (".mp4", ".mkv", ".ts", ".m3u8"):
+        if slug.lower().endswith(ext): slug = slug[:-len(ext)]; break
+    item = get_by_slug(slug)
+    if not item: raise HTTPException(404, "não encontrado")
+    return await stream_proxy(item["url"], request)
 
 if __name__ == "__main__":
     import uvicorn
