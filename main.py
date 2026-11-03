@@ -2,7 +2,7 @@ import asyncio, json, secrets, time, re, unicodedata
 from pathlib import Path
 from typing import Optional
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -174,7 +174,6 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
 
 @app.post("/admin/iptv/preparar")
 async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
-    """Cria o item no banco (sem notificar) para que ele possa ser editado no modal."""
     iptv_id = str(payload.get("id"))
     tipo = payload.get("tipo")
     
@@ -216,7 +215,7 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         db.commit(); db.refresh(item)
     return _serializar_rico(item)
 
-# --- ROTAS DE EDIÇÃO E EXCLUSÃO ---
+# --- ROTAS DE EDIÇÃO E EXCLUSÃO (COM BACKGROUND TASKS) ---
 @app.get("/admin/item/{tipo}/{item_id}")
 def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
@@ -249,7 +248,19 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
     return f"{base}/uploads/{sub}/{nome}"
 
 @app.put("/admin/filme/{item_id}")
-async def editar_filme(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+async def editar_filme(
+    item_id: str, 
+    background_tasks: BackgroundTasks,
+    titulo: Optional[str] = Form(None), 
+    ano: Optional[int] = Form(None), 
+    categoria: Optional[str] = Form(None), 
+    sinopse: Optional[str] = Form(None), 
+    capa: Optional[UploadFile] = File(None), 
+    banner: Optional[UploadFile] = File(None), 
+    logo: Optional[UploadFile] = File(None), 
+    notificar: Optional[bool] = Form(False), # ⚡ Flag para saber se notifica
+    db: Session = Depends(get_db)
+):
     it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
     if not it: raise HTTPException(404, "Não encontrado")
     if titulo: it.title = titulo
@@ -259,16 +270,36 @@ async def editar_filme(item_id: str, titulo: Optional[str] = Form(None), ano: Op
     if capa: it.poster = await _salvar_upload(capa, "capas")
     if banner: it.backdrop = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
-    it.editado = True; db.commit()
     
-    # ⚡ NOTIFICAÇÃO (Opcional: notificar caso tenha sido editado e salvo manualmente)
-    # await disparar_push_geral(titulo="🎬 Filme Atualizado", corpo=f"'{it.title}' foi atualizado.", imagem=it.poster, item_id=it.iptv_id, item_type="movie")
+    it.editado = True 
+    db.commit()
+    _rebuild_slugs()
+    
+    if notificar:
+        background_tasks.add_task(
+            disparar_push_geral,
+            titulo="🎬 Novo conteúdo adicionado!",
+            corpo=f"O Filme '{it.title}' acabou de chegar. Clique para assistir!",
+            imagem=it.poster, item_id=it.iptv_id, item_type="movie"
+        )
     
     await manager.broadcast("item_editado", {"tipo": "filme", "id": it.id, "titulo": it.title})
     return {"ok": True, "titulo": it.title}
 
 @app.put("/admin/serie/{item_id}")
-async def editar_serie(item_id: str, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+async def editar_serie(
+    item_id: str, 
+    background_tasks: BackgroundTasks,
+    titulo: Optional[str] = Form(None), 
+    ano: Optional[int] = Form(None), 
+    categoria: Optional[str] = Form(None), 
+    sinopse: Optional[str] = Form(None), 
+    capa: Optional[UploadFile] = File(None), 
+    banner: Optional[UploadFile] = File(None), 
+    logo: Optional[UploadFile] = File(None), 
+    notificar: Optional[bool] = Form(False),
+    db: Session = Depends(get_db)
+):
     it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
     if not it: raise HTTPException(404, "Não encontrado")
     if titulo: it.title = titulo
@@ -278,7 +309,19 @@ async def editar_serie(item_id: str, titulo: Optional[str] = Form(None), ano: Op
     if capa: it.poster = await _salvar_upload(capa, "capas")
     if banner: it.backdrop = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
-    it.editado = True; db.commit()
+    
+    it.editado = True 
+    db.commit()
+    _rebuild_slugs()
+    
+    if notificar:
+        background_tasks.add_task(
+            disparar_push_geral,
+            titulo="🎬 Novo conteúdo adicionado!",
+            corpo=f"A Série '{it.title}' acabou de chegar. Clique para assistir!",
+            imagem=it.poster, item_id=it.iptv_id, item_type="tv"
+        )
+
     await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.title})
     return {"ok": True, "titulo": it.title}
 
