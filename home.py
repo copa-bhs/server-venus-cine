@@ -41,9 +41,28 @@ def _construir_hero(db: Session) -> list:
         })
     return hero
 
+# ⚡ FUNÇÃO QUE EXTRAI AS CATEGORIAS LIMPAS DO BANCO
+def _obter_categorias(db: Session) -> list:
+    f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
+    s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
+    todas = set(f_cats + s_cats)
+    
+    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+    
+    result = []
+    for cat in todas:
+        if not cat: continue
+        cat_upper = cat.upper()
+        # Ignora anos (ex: 2024) e palavras genéricas
+        if cat_upper in ignorar or cat.isdigit(): continue
+        result.append(cat)
+        
+    result.sort()
+    return result[:20] # Limita a 20 categorias para não quebrar a tela
+
 def _construir_colecoes(db: Session) -> list:
     colecoes = []
-    MAX_COLECOES = 12 # ⚡ Limite de 12 coleções
+    MAX_COLECOES = 12
 
     def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=3):
         if len(colecoes) >= MAX_COLECOES: return
@@ -74,7 +93,7 @@ def _construir_colecoes(db: Session) -> list:
     # 3: EM ALTA
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
 
-    # 4: TENDÊNCIAS DA SEMANA (Recentes + Boa Nota)
+    # 4: TENDÊNCIAS DA SEMANA
     ano_limite = datetime.now().year - 1
     tend_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.0, FilmeDB.year >= ano_limite, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(15).all()
     tend_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.0, SerieDB.year >= ano_limite, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(15).all()
@@ -92,14 +111,13 @@ def _construir_colecoes(db: Session) -> list:
     recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(20).all()
     add("series_recentes", "🆕 Chegou Agora (Séries)", recentes_s, "serie", "clock")
 
-    # 8 a 12: STREAMINGS (Prioridade para Netflix, Amazon, etc)
+    # 8 a 12: STREAMINGS E CATEGORIAS
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
     
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas_cats = set(cats_f + cats_s)
 
-    # Lista de prioridades para garantir que streamings entrem primeiro
     prioridade = ["Netflix", "Amazon", "Prime", "Disney", "HBO", "Max", "Apple", "Globo", "Paramount", "Star"]
     
     def score_cat(c):
@@ -127,9 +145,14 @@ async def build_home_async(db: Session, force: bool = False) -> dict:
 
     hero = _construir_hero(db)
     colecoes = _construir_colecoes(db)
+    categorias = _obter_categorias(db) # ⚡ Puxa as categorias limpas
     
     resposta = {
-        "gerado_em": time.time(), "tmdb_ativo": TMDB_ENABLED, "hero": hero, "colecoes": colecoes,
+        "gerado_em": time.time(), 
+        "tmdb_ativo": TMDB_ENABLED, 
+        "hero": hero, 
+        "categorias": categorias, # ⚡ ENVIA NO JSON
+        "colecoes": colecoes,
         "stats": {"total_filmes": db.query(FilmeDB).count(), "total_series": db.query(SerieDB).count()}
     }
 
