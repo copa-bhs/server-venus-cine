@@ -4,6 +4,7 @@ import os
 import time
 import asyncio
 import httpx
+import random # ⚡ NOVO IMPORT AQUI
 from pathlib import Path
 import logs
 
@@ -44,7 +45,6 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
         data_str = d.get('release_date') or d.get('first_air_date') or ""
         ano = data_str[:4] if data_str else None
         
-        # ⚡ OTIMIZAÇÃO 1: Busca logo apenas no TMDB (Muito mais rápido que o Fanart)
         logo_url = None
         logos = d.get('images', {}).get('logos', [])
         if logos:
@@ -113,17 +113,22 @@ async def rodar_importacao():
     
     logs.adicionar_log("📥 Baixando listas do IPTV...")
     filmes, series = await asyncio.gather(iptv_parser.fetch_filmes(), iptv_parser.fetch_series())
+    
     itens = filmes + series
     total = len(itens)
-    logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo (MODO TURBO)...")
+    
+    # ⚡ A MÁGICA ACONTECE AQUI: Embaralha a lista para misturar filmes e séries
+    random.shuffle(itens) 
+    
+    logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo (MODO TURBO MISTURADO)...")
 
     catalogo, falhas = [], []
     
-    # ⚡ OTIMIZAÇÃO 2: Aumenta o semáforo de 40 para 80 (limite seguro do TMDB)
+    # Fila de 80 requisições simultâneas
     semaforo = asyncio.Semaphore(80)
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}, limits=httpx.Limits(max_connections=100)) as client:
-        # ⚡ OTIMIZAÇÃO 3: Processa em lotes de 50 para atualizar a tela mais rápido
+        # Processa em lotes de 50 para atualizar a tela mais rápido
         for i in range(0, total, 50):
             chunk = itens[i:i+50]
             tasks = [processar_item(client, it, semaforo) for it in chunk]
