@@ -11,7 +11,7 @@ from sqlalchemy import or_
 
 from config import *
 from info import fetch_movie_info, fetch_series_info
-from home import build_home_async, _serializar_leve
+from home import build_home_async
 from proxy import build_slug_map, get_by_slug, get_by_id, stream_proxy, stats as proxy_stats, total_slugs, limpar_tudo as limpar_proxy, slugify
 from db import criar_tabelas, SessionLocal, get_db, engine, Base, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Slide as SlideDB, Falha as FalhaDB
 from importer import importar_catalogo
@@ -55,8 +55,17 @@ def _rebuild_slugs():
                         "canais": [{"id": c.iptv_id, "url": c.url, "titulo": c.title} for c in canais]})
     finally: db.close()
 
+def _serializar_leve(item):
+    try: generos = json.loads(item.genres) if item.genres else []
+    except: generos = []
+    return {
+        "iptv_id": str(item.iptv_id), "title": item.title, "poster": item.poster, "backdrop": item.backdrop,
+        "logo": item.logo, "year": item.year, "rating_avg": item.rating_avg, "age_rating": item.age_rating,
+        "genres": generos, "type": item.type
+    }
+
 def _serializar_detalhes(item):
-    """Versão COMPLETA com link de vídeo. Usada apenas em /info e /admin."""
+    """Versão COMPLETA com link de vídeo e sinopse."""
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
     slug = item.slug or slugify(item.title or "", item.year)
@@ -70,7 +79,7 @@ def _serializar_detalhes(item):
         "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg,
         "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium,
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating,
-        "url_stream": url_proxy, "url_stream_direto": item.url # ⚡ Link presente apenas aqui
+        "url_stream": url_proxy, "url_stream_direto": item.url
     }
 
 @app.on_event("startup")
@@ -79,7 +88,6 @@ async def startup():
     importar_catalogo()
     _rebuild_slugs()
 
-# --- ROTAS BÁSICAS E HOME ---
 @app.get("/status")
 async def status(db: Session = Depends(get_db)):
     return {"stats": _stats(db), "sync_ativo": _SYNC_ATIVO, "proxy": {"slugs_carregados": total_slugs(), **proxy_stats()}}
@@ -95,7 +103,6 @@ async def home(force: bool = False):
         return _HOME_CACHE
     finally: db.close()
 
-# --- ROTAS ADMIN ---
 @app.post("/admin/wipe-all")
 async def admin_wipe_all():
     global _SYNC_ATIVO
@@ -124,7 +131,6 @@ async def admin_importar_catalogo():
     finally:
         _SYNC_ATIVO = False
 
-# --- ROTAS IPTV ---
 @app.get("/admin/iptv/buscar")
 async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(get_db)):
     q_norm = iptv_parser._clean_name(q).lower()
@@ -132,16 +138,13 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
     async with httpx.AsyncClient(timeout=60) as client:
         try: data = (await client.get(f"{IPTV_HOST}/player_api.php?username={IPTV_USERNAME}&password={IPTV_PASSWORD}&action={action}")).json()
         except: raise HTTPException(500, "Erro provedor.")
-    
     existentes = {f.iptv_id for f in db.query(FilmeDB.iptv_id).all()} if tipo == "filme" else {s.iptv_id for s in db.query(SerieDB.iptv_id).all()}
     resultados = []
-    
     for item in data:
         if not isinstance(item, dict): continue
         sid = str(item.get("stream_id") or item.get("series_id") or "")
         nome = item.get("name") or ""
         if not sid or q_norm not in nome.lower(): continue
-        
         resultados.append({
             "id": sid, "titulo": iptv_parser._clean_name(nome), "capa": item.get("stream_icon") or item.get("cover"),
             "ano": iptv_parser._extract_year(nome), "tipo": "movie" if tipo == "filme" else "tv",
@@ -154,15 +157,11 @@ async def admin_iptv_buscar(q: str, tipo: str = "filme", db: Session = Depends(g
 async def admin_iptv_recentes(db: Session = Depends(get_db)):
     filmes = await iptv_parser.fetch_filmes()
     series = await iptv_parser.fetch_series()
-    
     filmes.sort(key=lambda x: x.get("added", 0), reverse=True)
     series.sort(key=lambda x: x.get("added", 0), reverse=True)
-
     recentes = filmes[:20] + series[:20]
-
     existentes_f = {f.iptv_id for f in db.query(FilmeDB.iptv_id).all()}
     existentes_s = {s.iptv_id for s in db.query(SerieDB.iptv_id).all()}
-
     resultados = []
     for item in recentes:
         iptv_id = str(item["id"])
@@ -178,7 +177,6 @@ async def admin_iptv_recentes(db: Session = Depends(get_db)):
 async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
     iptv_id = str(payload.get("id"))
     tipo = payload.get("tipo")
-    
     if tipo == "movie":
         item = db.query(FilmeDB).filter(FilmeDB.iptv_id == iptv_id).first()
         if not item:
@@ -189,15 +187,12 @@ async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
         if not item:
             item = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano"))
             db.add(item); db.commit(); db.refresh(item)
-            
     return _serializar_detalhes(item)
 
-# --- ROTA DE SINCRONIZAR TMDB INDIVIDUAL ---
 @app.post("/admin/item/{tipo}/{item_id}/sync-tmdb")
 async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
     if not item: raise HTTPException(404, "Item não encontrado no banco")
-    
     db_type = "movie" if tipo == "filme" else "tv"
     async with httpx.AsyncClient(timeout=30) as client:
         tmdb_id = await iptv_catalog._buscar_tmdb(client, item.title, db_type, item.year)
@@ -213,11 +208,9 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         item.rating_avg = meta.get("rating_avg", 0); item.rating_count = meta.get("rating_count", 0)
         item.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
         item.age_rating = meta.get("age_rating")
-        
         db.commit(); db.refresh(item)
     return _serializar_detalhes(item)
 
-# --- ROTAS DE EDIÇÃO E EXCLUSÃO ---
 @app.get("/admin/item/{tipo}/{item_id}")
 def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
@@ -230,10 +223,7 @@ def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
         if tipo == "filme": it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
         elif tipo == "serie": it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
         elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
-        
-        if it: 
-            db.delete(it)
-            db.commit()
+        if it: db.delete(it); db.commit()
         _rebuild_slugs()
         return {"ok": True, "msg": "Excluído com sucesso"}
     except Exception as e:
@@ -250,19 +240,7 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
     return f"{base}/uploads/{sub}/{nome}"
 
 @app.put("/admin/filme/{item_id}")
-async def editar_filme(
-    item_id: str, 
-    background_tasks: BackgroundTasks,
-    titulo: Optional[str] = Form(None), 
-    ano: Optional[int] = Form(None), 
-    categoria: Optional[str] = Form(None), 
-    sinopse: Optional[str] = Form(None), 
-    capa: Optional[UploadFile] = File(None), 
-    banner: Optional[UploadFile] = File(None), 
-    logo: Optional[UploadFile] = File(None), 
-    notificar: Optional[bool] = Form(False),
-    db: Session = Depends(get_db)
-):
+async def editar_filme(item_id: str, background_tasks: BackgroundTasks, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), notificar: Optional[bool] = Form(False), db: Session = Depends(get_db)):
     it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
     if not it: raise HTTPException(404, "Não encontrado")
     if titulo: it.title = titulo
@@ -272,37 +250,13 @@ async def editar_filme(
     if capa: it.poster = await _salvar_upload(capa, "capas")
     if banner: it.backdrop = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
-    
-    it.editado = True 
-    db.commit()
-    _rebuild_slugs()
-    _HOME_CACHE.clear() # Limpa a home para atualizar as prateleiras
-    
-    if notificar:
-        background_tasks.add_task(
-            disparar_push_geral,
-            titulo="🎬 Novo conteúdo adicionado!",
-            corpo=f"O Filme '{it.title}' acabou de chegar. Clique para assistir!",
-            imagem=it.poster, item_id=it.iptv_id, item_type="movie"
-        )
-    
+    it.editado = True; db.commit(); _rebuild_slugs(); _HOME_CACHE.clear()
+    if notificar: background_tasks.add_task(disparar_push_geral, titulo="🎬 Novo conteúdo adicionado!", corpo=f"O Filme '{it.title}' acabou de chegar.", imagem=it.poster, item_id=it.iptv_id, item_type="movie")
     await manager.broadcast("item_editado", {"tipo": "filme", "id": it.id, "titulo": it.title})
     return {"ok": True, "titulo": it.title}
 
 @app.put("/admin/serie/{item_id}")
-async def editar_serie(
-    item_id: str, 
-    background_tasks: BackgroundTasks,
-    titulo: Optional[str] = Form(None), 
-    ano: Optional[int] = Form(None), 
-    categoria: Optional[str] = Form(None), 
-    sinopse: Optional[str] = Form(None), 
-    capa: Optional[UploadFile] = File(None), 
-    banner: Optional[UploadFile] = File(None), 
-    logo: Optional[UploadFile] = File(None), 
-    notificar: Optional[bool] = Form(False),
-    db: Session = Depends(get_db)
-):
+async def editar_serie(item_id: str, background_tasks: BackgroundTasks, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), notificar: Optional[bool] = Form(False), db: Session = Depends(get_db)):
     it = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
     if not it: raise HTTPException(404, "Não encontrado")
     if titulo: it.title = titulo
@@ -312,24 +266,11 @@ async def editar_serie(
     if capa: it.poster = await _salvar_upload(capa, "capas")
     if banner: it.backdrop = await _salvar_upload(banner, "banners")
     if logo: it.logo = await _salvar_upload(logo, "logos")
-    
-    it.editado = True 
-    db.commit()
-    _rebuild_slugs()
-    _HOME_CACHE.clear()
-    
-    if notificar:
-        background_tasks.add_task(
-            disparar_push_geral,
-            titulo="🎬 Novo conteúdo adicionado!",
-            corpo=f"A Série '{it.title}' acabou de chegar. Clique para assistir!",
-            imagem=it.poster, item_id=it.iptv_id, item_type="tv"
-        )
-
+    it.editado = True; db.commit(); _rebuild_slugs(); _HOME_CACHE.clear()
+    if notificar: background_tasks.add_task(disparar_push_geral, titulo="🎬 Novo conteúdo adicionado!", corpo=f"A Série '{it.title}' acabou de chegar.", imagem=it.poster, item_id=it.iptv_id, item_type="tv")
     await manager.broadcast("item_editado", {"tipo": "serie", "id": it.id, "titulo": it.title})
     return {"ok": True, "titulo": it.title}
 
-# --- OUTRAS ROTAS (USANDO SERIALIZAÇÃO LEVE PARA LISTAS) ---
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
@@ -345,7 +286,7 @@ def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     query = db.query(FilmeDB)
     if q: query = query.filter(FilmeDB.title.ilike(f"%{q}%"))
     items = query.offset((page-1)*size).limit(size).all()
-    return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]} # Admin precisa do link
+    return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
 @app.get("/admin/series")
 def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
@@ -354,21 +295,31 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
+# ⚡ ROTAS DE INFO CORRIGIDAS (BUSCA NOS DOIS BANCOS)
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
+    # Tenta achar em Filmes
     f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
-    if f: return _serializar_detalhes(f) # Retorna com link de vídeo apenas aqui!
+    if f: return _serializar_detalhes(f)
+    # Se não achar, tenta achar em Séries (para evitar erro de categoria do app)
+    s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
+    if s: return _serializar_detalhes(s)
+    # Se não achar em nenhum, busca externo
     return await fetch_movie_info(item_id)
 
 @app.get("/info/serie/{item_id}")
 @app.get("/info/tv/{item_id}")
 async def info_serie(item_id: str, db: Session = Depends(get_db)):
+    # Tenta achar em Séries
     s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
-    if s: item_id = s.iptv_id 
+    if s: return _serializar_detalhes(s)
+    # Se não achar, tenta achar em Filmes
+    f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
+    if f: return _serializar_detalhes(f)
+    # Se não achar, busca externo
     return await fetch_series_info(item_id)
 
-# Rota de Slider
 @app.get("/admin/slider")
 def admin_slider_listar(db: Session = Depends(get_db)):
     slides = db.query(SlideDB).order_by(SlideDB.ordem).all()
@@ -381,7 +332,6 @@ def admin_slider_listar(db: Session = Depends(get_db)):
         elif s.ref_tipo == "serie":
             r = db.query(SerieDB).get(s.ref_id)
             if r: ref = {"titulo": r.title, "capa": r.poster, "banner": r.backdrop, "ano": r.year}
-            
         out.append({
             "id": s.id, "ordem": s.ordem, "ref_tipo": s.ref_tipo, "ref_id": s.ref_id, 
             "titulo": s.titulo or (ref["titulo"] if ref else "?"), 
