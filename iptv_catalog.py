@@ -8,14 +8,12 @@ from pathlib import Path
 import logs
 
 from config import (
-    TMDB_API_KEY, FANART_API_KEY, FANART_LANGUAGE,
-    IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT, CACHE_DIR
+    TMDB_API_KEY, IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT, CACHE_DIR
 )
 
 ARQUIVO_CATALOGO = CACHE_DIR / "catalogo.json"
 ARQUIVO_FALHAS = CACHE_DIR / "falhas.json"
 TMDB_BASE = "https://api.themoviedb.org/3"
-FANART_BASE = "https://webservice.fanart.tv/v3"
 
 def _salvar_json(dados, path):
     temp = str(path) + ".tmp"
@@ -46,6 +44,7 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
         data_str = d.get('release_date') or d.get('first_air_date') or ""
         ano = data_str[:4] if data_str else None
         
+        # ⚡ OTIMIZAÇÃO 1: Busca logo apenas no TMDB (Muito mais rápido que o Fanart)
         logo_url = None
         logos = d.get('images', {}).get('logos', [])
         if logos:
@@ -54,20 +53,6 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
             if not logo_url:
                 for lg in logos:
                     if lg.get('iso_639_1') in ['en', None]: logo_url = f"https://image.tmdb.org/t/p/w500{lg['file_path']}"; break
-
-        if not logo_url and FANART_API_KEY:
-            try:
-                tvdb_id = d.get('external_ids', {}).get('tvdb_id') if tipo != "movie" else None
-                fan_url = f"{FANART_BASE}/movies/{tmdb_id}?api_key={FANART_API_KEY}" if tipo == "movie" else f"{FANART_BASE}/tv/{tvdb_id}?api_key={FANART_API_KEY}"
-                r_fan = await client.get(fan_url, timeout=5)
-                if r_fan.status_code == 200:
-                    fan_data = r_fan.json()
-                    keys = ['hdmovielogo', 'movielogo'] if tipo == "movie" else ['hdtvlogo', 'clearlogo']
-                    for k in keys:
-                        for lg in fan_data.get(k, []):
-                            if lg.get('lang') == FANART_LANGUAGE: logo_url = lg['url']; break
-                        if logo_url: break
-            except: pass
 
         age_rating = None
         if tipo == "movie":
@@ -130,15 +115,17 @@ async def rodar_importacao():
     filmes, series = await asyncio.gather(iptv_parser.fetch_filmes(), iptv_parser.fetch_series())
     itens = filmes + series
     total = len(itens)
-    logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo com TMDB...")
+    logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo (MODO TURBO)...")
 
     catalogo, falhas = [], []
-    semaforo = asyncio.Semaphore(40)
+    
+    # ⚡ OTIMIZAÇÃO 2: Aumenta o semáforo de 40 para 80 (limite seguro do TMDB)
+    semaforo = asyncio.Semaphore(80)
 
-    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}) as client:
-        # ⚡ CORREÇÃO CRÍTICA: Processa em lotes de 100 para não estourar a memória da VPS
-        for i in range(0, total, 100):
-            chunk = itens[i:i+100]
+    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}, limits=httpx.Limits(max_connections=100)) as client:
+        # ⚡ OTIMIZAÇÃO 3: Processa em lotes de 50 para atualizar a tela mais rápido
+        for i in range(0, total, 50):
+            chunk = itens[i:i+50]
             tasks = [processar_item(client, it, semaforo) for it in chunk]
             results = await asyncio.gather(*tasks)
             
@@ -146,8 +133,8 @@ async def rodar_importacao():
                 if res["status"] == "success": catalogo.append(res["data"])
                 else: falhas.append(res["data"])
             
-            logs.adicionar_log(f"[{min(i+100, total)}/{total}] Processados e salvos no cache...")
+            logs.adicionar_log(f"[{min(i+50, total)}/{total}] Processados e salvos no cache...")
             _salvar_json(catalogo, ARQUIVO_CATALOGO)
             _salvar_json(falhas, ARQUIVO_FALHAS)
 
-    logs.adicionar_log(f"🏁 Download e enriquecimento concluídos! {len(catalogo)} sucessos.")
+    logs.adicionar_log(f"🏁 Enriquecimento concluído! {len(catalogo)} sucessos. Iniciando envio para o BANCO DE DADOS...")
