@@ -1,5 +1,6 @@
 import time
 import json
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from db import Filme as FilmeDB, Serie as SerieDB, Slide as SlideDB
@@ -42,10 +43,10 @@ def _construir_hero(db: Session) -> list:
 
 def _construir_colecoes(db: Session) -> list:
     colecoes = []
-    MAX_COLECOES = 10 # ⚡ LIMITE MÁXIMO DE PRATELEIRAS
+    MAX_COLECOES = 12 # ⚡ Limite de 12 coleções
 
-    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=5):
-        if len(colecoes) >= MAX_COLECOES: return # ⚡ PARA SE JÁ TIVER 10
+    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=3):
+        if len(colecoes) >= MAX_COLECOES: return
         if not items: return
         
         vistos = set()
@@ -63,54 +64,58 @@ def _construir_colecoes(db: Session) -> list:
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
-    # ⚡ 1 e 2: TOP 10 (Prioridade Máxima)
+    # 1 e 2: TOP 10
     top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star", min_itens=1)
 
     top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star", min_itens=1)
 
-    # ⚡ 3: EM ALTA
+    # 3: EM ALTA
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
 
-    # ⚡ 4 e 5: RECENTES
+    # 4: TENDÊNCIAS DA SEMANA (Recentes + Boa Nota)
+    ano_limite = datetime.now().year - 1
+    tend_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.0, FilmeDB.year >= ano_limite, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(15).all()
+    tend_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.0, SerieDB.year >= ano_limite, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(15).all()
+    add("tendencias", "📈 Tendências da Semana", sorted(tend_f + tend_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "trending-up")
+
+    # 5: RECOMENDAÇÕES
+    rec_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(20).all()
+    rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(20).all()
+    add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
+
+    # 6 e 7: RECENTES
     recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(20).all()
     add("filmes_recentes", "🆕 Chegou Agora (Filmes)", recentes_f, "filme", "clock")
 
     recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(20).all()
     add("series_recentes", "🆕 Chegou Agora (Séries)", recentes_s, "serie", "clock")
 
-    # ⚡ 6: RECOMENDAÇÕES
-    rec_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(20).all()
-    rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(20).all()
-    add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
-
-    # ⚡ 7 a 10: FRANQUIAS E STREAMINGS (O resto é preenchido até dar 10)
-    franquias_config = {
-        "Harry Potter": "⚡ A Saga Harry Potter",
-        "Os Simpsons": "🍩 Os Simpsons",
-        "Vingadores": "🛡️ Vingadores",
-        "Velozes e Furiosos": "🏎️ Velozes e Furiosos",
-        "Resident Evil": "🧟 Resident Evil",
-        "Star Wars": "🌌 Star Wars",
-    }
-    for franquia, nome in franquias_config.items():
-        if len(colecoes) >= MAX_COLECOES: break
-        items = db.query(FilmeDB).filter(FilmeDB.title.ilike(f"{franquia}%"), FilmeDB.poster.isnot(None)).order_by(FilmeDB.year).all()
-        add(f"franquia_{franquia}", nome, items, "filme", "collection", min_itens=3)
-
-    # Preenche com streamings (Netflix, etc) se ainda não bateu 10
+    # 8 a 12: STREAMINGS (Prioridade para Netflix, Amazon, etc)
+    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+    
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas_cats = set(cats_f + cats_s)
-    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026"]
+
+    # Lista de prioridades para garantir que streamings entrem primeiro
+    prioridade = ["Netflix", "Amazon", "Prime", "Disney", "HBO", "Max", "Apple", "Globo", "Paramount", "Star"]
     
-    for cat in todas_cats:
+    def score_cat(c):
+        for i, p in enumerate(prioridade):
+            if p.lower() in c.lower(): return i
+        return 99
+        
+    cats_ordenadas = sorted(list(todas_cats), key=score_cat)
+
+    for cat in cats_ordenadas:
         if len(colecoes) >= MAX_COLECOES: break
         if not cat or cat.upper() in ignorar or cat.isdigit(): continue
+        
         items_f = db.query(FilmeDB).filter(FilmeDB.coletany == cat).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
         items_s = db.query(SerieDB).filter(SerieDB.coletany == cat).order_by(desc(SerieDB.rating_avg)).limit(20).all()
-        add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder", min_itens=5)
+        add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder", min_itens=3)
 
     return colecoes
 
