@@ -21,6 +21,7 @@ import logs
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router, disparar_push_geral
 import parser as iptv_parser
+from tmdb import normalizar_classificacao # ⚡ IMPORTANDO A TRADUÇÃO DE IDADE
 
 app = FastAPI(title="IPTV Organizer Pro", version="13.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
@@ -192,6 +193,7 @@ async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
         if not item: item = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano")); db.add(item); db.commit(); db.refresh(item)
     return _serializar_detalhes(item)
 
+# ⚡ ROTA DE SYNC TMDB COM TRADUÇÃO DE IDADE
 @app.post("/admin/item/{tipo}/{item_id}/sync-tmdb")
 async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
@@ -202,10 +204,25 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         if not tmdb_id: raise HTTPException(404, "Não encontrado no TMDB")
         meta = await iptv_catalog._obter_detalhes_tmdb(client, tmdb_id, db_type)
         if not meta: raise HTTPException(500, "Erro ao buscar detalhes no TMDB")
-        item.tmdb_id = meta.get("tmdb_id"); item.imdb_id = meta.get("imdb_id"); item.title = meta.get("title"); item.original_title = meta.get("original_title")
-        item.slug = meta.get("slug"); item.duration = meta.get("duration"); item.description = meta.get("description"); item.poster = meta.get("poster")
-        item.logo = meta.get("logo"); item.backdrop = meta.get("backdrop"); item.rating_avg = meta.get("rating_avg", 0); item.rating_count = meta.get("rating_count", 0)
-        item.genres = json.dumps(meta.get("genres", []), ensure_ascii=False); item.age_rating = meta.get("age_rating")
+        
+        item.tmdb_id = meta.get("tmdb_id")
+        item.imdb_id = meta.get("imdb_id")
+        item.title = meta.get("title")
+        item.original_title = meta.get("original_title")
+        item.slug = meta.get("slug")
+        item.duration = meta.get("duration")
+        item.description = meta.get("description")
+        item.poster = meta.get("poster")
+        item.logo = meta.get("logo")
+        item.backdrop = meta.get("backdrop")
+        item.rating_avg = meta.get("rating_avg", 0)
+        item.rating_count = meta.get("rating_count", 0)
+        item.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
+        
+        # ⚡ AQUI ESTÁ A CORREÇÃO: Normaliza "TV-MA" para "18" antes de salvar
+        raw_age = meta.get("age_rating")
+        item.age_rating = normalizar_classificacao(raw_age) if raw_age else None
+        
         db.commit(); db.refresh(item)
     return _serializar_detalhes(item)
 
@@ -234,7 +251,6 @@ async def _salvar_upload(arq: Optional[UploadFile], sub: str) -> Optional[str]:
         while chunk := await arq.read(1024 * 1024): f.write(chunk)
     base = PUBLIC_BASE_URL.rstrip("/"); return f"{base}/uploads/{sub}/{nome}"
 
-# ⚡ ROTAS DE EDIÇÃO ATUALIZADAS COM OS NOVOS CAMPOS
 @app.put("/admin/filme/{item_id}")
 async def editar_filme(item_id: str, background_tasks: BackgroundTasks, titulo: Optional[str] = Form(None), ano: Optional[int] = Form(None), categoria: Optional[str] = Form(None), sinopse: Optional[str] = Form(None), capa: Optional[UploadFile] = File(None), banner: Optional[UploadFile] = File(None), logo: Optional[UploadFile] = File(None), age_rating: Optional[str] = Form(None), genres: Optional[str] = Form(None), duration: Optional[int] = Form(None), notificar: Optional[bool] = Form(False), db: Session = Depends(get_db)):
     it = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
