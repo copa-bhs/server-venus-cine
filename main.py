@@ -21,7 +21,7 @@ import logs
 from websocket_manager import manager
 from notificacoes import router as notificacoes_router, disparar_push_geral
 import parser as iptv_parser
-from tmdb import normalizar_classificacao # ⚡ IMPORTANDO A TRADUÇÃO DE IDADE
+from tmdb import normalizar_classificacao
 
 app = FastAPI(title="IPTV Organizer Pro", version="13.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
@@ -45,6 +45,16 @@ def _rebuild_slugs():
                         "series": [{"id": s.iptv_id, "url": "", "titulo": s.title, "ano": s.year, "episodios": []} for s in series],
                         "canais": [{"id": c.iptv_id, "url": c.url, "titulo": c.title} for c in canais]})
     finally: db.close()
+
+def _serializar_leve(item):
+    try: generos = json.loads(item.genres) if item.genres else []
+    except: generos = []
+    tipo_final = "movie" if item.stream_type == "movie" else "series"
+    return {
+        "iptv_id": str(item.iptv_id), "title": item.title, "poster": item.poster, "backdrop": item.backdrop,
+        "logo": item.logo, "year": item.year, "rating_avg": item.rating_avg, "age_rating": item.age_rating,
+        "genres": generos, "type": tipo_final
+    }
 
 def _serializar_detalhes(item):
     try: generos = json.loads(item.genres) if item.genres else []
@@ -112,6 +122,38 @@ def categorias(db: Session = Depends(get_db)):
         result.append(cat)
     result.sort()
     return {"filmes": result, "series": result, "todos": result}
+
+# ⚡ ROTA DE BUSCA RESTAURADA E CORRIGIDA
+@app.get("/buscar")
+def buscar(q: str, tipo: str | None = None, page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
+    q_norm = f"%{q}%"
+    resultados = []
+    
+    # Busca em Filmes
+    if tipo in (None, "filme", "movie"):
+        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(100).all():
+            resultados.append(f)
+            
+    # Busca em Séries
+    if tipo in (None, "serie", "series"):
+        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(100).all():
+            resultados.append(s)
+
+    # Paginação
+    total = len(resultados)
+    start = (page - 1) * size
+    end = start + size
+    paged = resultados[start:end]
+    
+    return {
+        "page": page,
+        "page_size": size,
+        "total_items": total,
+        "total_pages": (total + size - 1) // size,
+        "has_next": end < total,
+        "has_prev": page > 1,
+        "items": [_serializar_leve(it) for it in paged]
+    }
 
 async def _task_importar():
     try:
@@ -193,7 +235,6 @@ async def admin_iptv_preparar(payload: dict, db: Session = Depends(get_db)):
         if not item: item = SerieDB(iptv_id=iptv_id, stream_type="tv", coletany="Manual", title=payload["titulo"], poster=payload.get("capa"), url="", year=payload.get("ano")); db.add(item); db.commit(); db.refresh(item)
     return _serializar_detalhes(item)
 
-# ⚡ ROTA DE SYNC TMDB COM TRADUÇÃO DE IDADE
 @app.post("/admin/item/{tipo}/{item_id}/sync-tmdb")
 async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(get_db)):
     item = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first() if tipo == "filme" else db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
@@ -219,7 +260,6 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         item.rating_count = meta.get("rating_count", 0)
         item.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
         
-        # ⚡ AQUI ESTÁ A CORREÇÃO: Normaliza "TV-MA" para "18" antes de salvar
         raw_age = meta.get("age_rating")
         item.age_rating = normalizar_classificacao(raw_age) if raw_age else None
         
