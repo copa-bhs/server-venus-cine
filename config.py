@@ -44,13 +44,18 @@ FANART_LANGUAGE = os.getenv("FANART_LANGUAGE", "pt").lower()[:2]
 
 PROXY_ENABLED          = os.getenv("PROXY_ENABLED", "true").lower() == "true"
 PROXY_MAX_CONCURRENT   = int(os.getenv("PROXY_MAX_CONCURRENT", "100"))
-PROXY_MAX_PER_IP       = int(os.getenv("PROXY_MAX_PER_IP", "3"))
-PROXY_CHUNK_SIZE       = int(os.getenv("PROXY_CHUNK_SIZE", "262144"))
-PROXY_CONNECT_TIMEOUT  = int(os.getenv("PROXY_CONNECT_TIMEOUT", "10"))
-PROXY_READ_TIMEOUT     = int(os.getenv("PROXY_READ_TIMEOUT", "300"))
+PROXY_MAX_PER_IP       = int(os.getenv("PROXY_MAX_PER_IP", "5")) # Aumentado para 5 (celular as vezes abre conexões paralelas)
 
-# ⚠️ DOMÍNIO DA VPS (para links de imagem e proxy)
-PUBLIC_BASE_URL = "https://cine.venusdev.xyz" 
+# ⚡ CORREÇÃO 1: Aumentado de 256KB para 1MB (1048576). Isso acelera muito o carregamento do vídeo.
+PROXY_CHUNK_SIZE       = int(os.getenv("PROXY_CHUNK_SIZE", "1048576")) 
+
+PROXY_CONNECT_TIMEOUT  = int(os.getenv("PROXY_CONNECT_TIMEOUT", "15")) # Aumentado para 15s
+
+# ⚡ CORREÇÃO 2: Aumentado de 300s (5 min) para 600s (10 min). Evita que o vídeo caia no meio.
+PROXY_READ_TIMEOUT     = int(os.getenv("PROXY_READ_TIMEOUT", "600")) 
+
+# ⚡ CORREÇÃO 3: URL agora pode ser puxada do .env, com fallback para o seu domínio.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://cine.venusdev.xyz").rstrip("/")
 
 CACHE_TTL = int(os.getenv("CACHE_TTL", "21600"))
 PORT      = int(os.getenv("PORT", "8000"))

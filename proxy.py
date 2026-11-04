@@ -1,7 +1,7 @@
 import asyncio, json, re, unicodedata
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from config import (
     USER_AGENT, SLUG_MAP_FILMES_FILE, SLUG_MAP_SERIES_FILE, SLUG_MAP_CANAIS_FILE,
     PROXY_ENABLED, PROXY_MAX_CONCURRENT, PROXY_MAX_PER_IP,
@@ -93,15 +93,14 @@ def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = No
     _ID_MAP[str(item_id)] = dados
     if slug: _SLUG_MAP[slug] = dados
 
-async def stream_proxy(url: str, request: Request) -> StreamingResponse:
+async def stream_proxy(url: str, request: Request) -> Response:
     global _active_total
     if not PROXY_ENABLED: raise HTTPException(404, "Proxy desativado.")
     if not url or not url.strip(): raise HTTPException(404, "Item sem URL.")
 
-    # ⚡ 1. Tratamento de OPTIONS (Preflight CORS) para o Canvas
+    # 1. Preflight CORS
     if request.method == "OPTIONS":
-        return StreamingResponse(
-            iter([]), 
+        return Response(
             status_code=200, 
             headers={
                 "Access-Control-Allow-Origin": "*",
@@ -115,29 +114,65 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
     if _active_total >= PROXY_MAX_CONCURRENT: raise HTTPException(503, "Servidor no limite.")
     if _active_by_ip.get(client_ip, 0) >= PROXY_MAX_PER_IP: raise HTTPException(429, "Limite por IP.")
 
+    # 2. Prepara os Headers (incluindo Range)
     headers = {"User-Agent": USER_AGENT}
-    if "range" in request.headers: headers["Range"] = request.headers["range"]
-    if "if-modified-since" in request.headers: headers["If-Modified-Since"] = request.headers["if-modified-since"]
+    if "range" in request.headers:
+        headers["Range"] = request.headers["range"]
+    if "if-modified-since" in request.headers:
+        headers["If-Modified-Since"] = request.headers["if-modified-since"]
+    if "if-range" in request.headers:
+        headers["If-Range"] = request.headers["if-range"]
 
-    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=PROXY_CONNECT_TIMEOUT, read=PROXY_READ_TIMEOUT, write=PROXY_READ_TIMEOUT, pool=None), limits=httpx.Limits(max_connections=PROXY_MAX_CONCURRENT + 50, max_keepalive_connections=PROXY_MAX_CONCURRENT), follow_redirects=True)
+    # 3. Cria o cliente HTTPX com timeouts generosos e limite de conexões
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=PROXY_CONNECT_TIMEOUT, read=PROXY_READ_TIMEOUT, write=PROXY_READ_TIMEOUT, pool=None),
+        limits=httpx.Limits(max_connections=PROXY_MAX_CONCURRENT + 50, max_keepalive_connections=PROXY_MAX_CONCURRENT),
+        follow_redirects=True
+    )
 
-    try: upstream = await client.send(client.build_request("GET", url, headers=headers), stream=True)
+    try:
+        # 4. Faz a requisição ao servidor de origem
+        req = client.build_request("GET", url, headers=headers)
+        upstream = await client.send(req, stream=True)
     except httpx.RequestError as e:
-        await client.aclose(); raise HTTPException(502, f"Erro: {e}")
+        await client.aclose()
+        raise HTTPException(502, f"Erro de rede: {e}")
 
+    # 5. Se o servidor de origem recusar (403, 404, etc)
     if upstream.status_code >= 400:
         status = upstream.status_code
-        await upstream.aclose(); await client.aclose()
-        raise HTTPException(status, "Provedor recusou.")
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status, "Provedor recusou o acesso ao vídeo.")
 
     _active_total += 1
     _active_by_ip[client_ip] = _active_by_ip.get(client_ip, 0) + 1
 
+    # 6. Monta os headers de resposta (Copiando do origem e adicionando CORS)
+    resp_headers = {}
+    for h in ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"):
+        if h in upstream.headers:
+            resp_headers[h] = upstream.headers[h]
+    
+    # Headers cruciais para o player funcionar
+    resp_headers["Accept-Ranges"] = "bytes"
+    resp_headers["Cache-Control"] = "public, max-age=3600"
+    resp_headers["Access-Control-Allow-Origin"] = "*"
+    resp_headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+    resp_headers["Access-Control-Allow-Headers"] = "Range, Origin, Accept, Content-Type"
+    resp_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+    resp_headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+
+    media_type = upstream.headers.get("content-type", "video/mp4")
+
+    # 7. Função geradora do stream
     async def _streamer():
         global _active_total
         try:
-            async for chunk in upstream.aiter_bytes(PROXY_CHUNK_SIZE): yield chunk
-        except: pass
+            async for chunk in upstream.aiter_bytes(PROXY_CHUNK_SIZE):
+                yield chunk
+        except Exception as e:
+            print(f"[Proxy] Erro durante o streaming: {e}")
         finally:
             _active_total = max(0, _active_total - 1)
             if client_ip in _active_by_ip:
@@ -148,18 +183,10 @@ async def stream_proxy(url: str, request: Request) -> StreamingResponse:
             try: await client.aclose()
             except: pass
 
-    resp_headers = {}
-    for h in ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"):
-        if h in upstream.headers: resp_headers[h] = upstream.headers[h]
-    
-    # ⚡ 2. Headers de CORS liberados para o Canvas (Ambient Light)
-    resp_headers["accept-ranges"] = "bytes"
-    resp_headers["cache-control"] = "no-store"
-    resp_headers["Access-Control-Allow-Origin"] = "*"
-    resp_headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    resp_headers["Access-Control-Allow-Headers"] = "*"
-    resp_headers["Access-Control-Expose-Headers"] = "*" 
-    resp_headers["Cross-Origin-Resource-Policy"] = "cross-origin" # Permite ao Chrome ler os pixels do vídeo
-
-    media_type = upstream.headers.get("content-type", "video/mp4")
-    return StreamingResponse(_streamer(), status_code=upstream.status_code, headers=resp_headers, media_type=media_type)
+    # 8. Retorna a resposta com o código de status correto (206 se for Range, 200 se for inteiro)
+    return StreamingResponse(
+        _streamer(), 
+        status_code=upstream.status_code, 
+        headers=resp_headers, 
+        media_type=media_type
+    )
