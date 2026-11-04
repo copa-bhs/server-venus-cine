@@ -51,11 +51,8 @@ def _serializar_detalhes(item):
     slug = item.slug or slugify(item.title or "", item.year)
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
-    
-    # ⚡ FORMATA AS DATAS PARA O PADRÃO ISO DO JSON
     created_iso = item.created_at.isoformat() + "Z" if getattr(item, 'created_at', None) else None
     updated_iso = item.updated_at.isoformat() + "Z" if getattr(item, 'updated_at', None) else None
-
     return {
         "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, 
         "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, 
@@ -63,7 +60,7 @@ def _serializar_detalhes(item):
         "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, 
         "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, 
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, 
-        "created_at": created_iso, "updated_at": updated_iso, # ⚡ INCLUÍDO NO JSON
+        "created_at": created_iso, "updated_at": updated_iso,
         "url_stream": url_proxy, "url_stream_direto": item.url
     }
 
@@ -100,18 +97,22 @@ async def home(force: bool = False, response: Response = None):
         return await home_module.build_home_async(db, force=force)
     finally: db.close()
 
+# ⚡ ROTA DE CATEGORIAS BLINDADA (TODAS AS CATEGORIAS, SEM LIMITE)
 @app.get("/categorias")
 def categorias(db: Session = Depends(get_db)):
     f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas = set(f_cats + s_cats)
-    ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO"]
+    
+    ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+    
     result = []
     for cat in todas:
         if not cat: continue
         cat_upper = cat.upper()
         if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): continue
         result.append(cat)
+        
     result.sort()
     return {"filmes": result, "series": result, "todos": result}
 
