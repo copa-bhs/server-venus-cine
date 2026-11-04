@@ -8,7 +8,7 @@ from config import TMDB_ENABLED, PUBLIC_BASE_URL
 
 _HOME_CACHE = {}
 _HOME_CACHE_TS = 0
-CACHE_TTL = 60  # ⚡ CACHE REDUZIDO PARA 1 MINUTO
+CACHE_TTL = 60
 
 def limpar_cache():
     global _HOME_CACHE, _HOME_CACHE_TS
@@ -71,12 +71,18 @@ def _construir_colecoes(db: Session) -> list:
     # 2. EM ALTA
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
 
-    # 3. RECENTES INTELIGENTES (Filmes + Séries misturados, ordenados por Nota)
-    # Pega os 50 mais novos de cada
-    recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(50).all()
-    recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(50).all()
+    # 3. RECENTES INTELIGENTES (Data real do IPTV + Nota)
+    # Pega os últimos 30 de cada baseados na data real de criação (created_at)
+    recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None), FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
+    recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None), SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
     
-    # Junta todos e ordena pela nota (se a nota for bombada, vai pro topo, independente de ter sido o último adicionado)
+    # Se por algum motivo o created_at estiver nulo em tudo, usa o ID como fallback
+    if not recentes_f and not recentes_s:
+        recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(30).all()
+        recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(30).all()
+
+    # O Algoritmo: Pega os 60 itens mais novos e ordena pela nota. 
+    # Se você adicionou um filme nota 9.5 ontem e um nota 5.0 hoje, o 9.5 ficará em primeiro!
     recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
     add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
 
@@ -91,7 +97,7 @@ def _construir_colecoes(db: Session) -> list:
     rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(20).all()
     add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
 
-    # 6. STREAMINGS (Netflix, Amazon, etc)
+    # 6. STREAMINGS
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
 from db import SessionLocal, Filme as FilmeDB, Serie as SerieDB, Canal as CanalDB, Falha as FalhaDB
@@ -61,6 +62,16 @@ def importar_catalogo():
             obj.audio_type = item.get("audio_type", "dubbed")
             obj.age_rating = item.get("age_rating")
             obj.url = item.get("url", "")
+
+            # ⚡ SALVANDO A DATA REAL DE ADIÇÃO
+            created_at_str = item.get("created_at")
+            if created_at_str:
+                try:
+                    # Formato esperado: 2026-10-26T16:09:55.000000Z
+                    dt = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    obj.created_at = dt
+                except:
+                    pass # Se falhar, mantém a data padrão do banco
 
             generos = item.get("genres", [])
             obj.genres = json.dumps(generos, ensure_ascii=False) if isinstance(generos, list) else "[]"

@@ -4,7 +4,8 @@ import os
 import time
 import asyncio
 import httpx
-import random # ⚡ NOVO IMPORT AQUI
+import random
+from datetime import datetime, timezone
 from pathlib import Path
 import logs
 
@@ -100,11 +101,28 @@ async def processar_item(client, item, semaforo):
                 if r.status_code == 200: tmdb_id = r.json().get('info', {}).get('tmdb_id')
             except: pass
 
+        # ⚡ CONVERSÃO DA DATA DE ADIÇÃO DO IPTV PARA ISO 8601
+        ts_added = item.get("added", 0)
+        created_at_iso = None
+        if ts_added and ts_added > 0:
+            try:
+                dt = datetime.fromtimestamp(ts_added, tz=timezone.utc)
+                created_at_iso = dt.isoformat().replace("+00:00", "Z")
+            except:
+                pass
+
         if tmdb_id:
             meta = await _obter_detalhes_tmdb(client, tmdb_id, item["tipo"])
             if meta:
                 meta["audio_type"] = item.get("audio_type", "dubbed")
-                return {"status": "success", "data": {"iptv_id": item["id"], "stream_type": item["tipo"], "coletany": item.get("categoria", "Desconhecida"), "url": item.get("url", ""), **meta}}
+                return {"status": "success", "data": {
+                    "iptv_id": item["id"], 
+                    "stream_type": item["tipo"], 
+                    "coletany": item.get("categoria", "Desconhecida"), 
+                    "url": item.get("url", ""), 
+                    "created_at": created_at_iso, # ⚡ ADICIONADO AQUI
+                    **meta
+                }}
         
         return {"status": "fail", "data": {"iptv_id": item["id"], "nome_original": item.get("nome_bruto") or item["titulo"], "tipo": item["tipo"]}}
 
@@ -113,22 +131,16 @@ async def rodar_importacao():
     
     logs.adicionar_log("📥 Baixando listas do IPTV...")
     filmes, series = await asyncio.gather(iptv_parser.fetch_filmes(), iptv_parser.fetch_series())
-    
     itens = filmes + series
     total = len(itens)
-    
-    # ⚡ A MÁGICA ACONTECE AQUI: Embaralha a lista para misturar filmes e séries
     random.shuffle(itens) 
     
     logs.adicionar_log(f"✅ {total} itens encontrados. Enriquecendo (MODO TURBO MISTURADO)...")
 
     catalogo, falhas = [], []
-    
-    # Fila de 80 requisições simultâneas
     semaforo = asyncio.Semaphore(80)
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": USER_AGENT}, limits=httpx.Limits(max_connections=100)) as client:
-        # Processa em lotes de 50 para atualizar a tela mais rápido
         for i in range(0, total, 50):
             chunk = itens[i:i+50]
             tasks = [processar_item(client, it, semaforo) for it in chunk]

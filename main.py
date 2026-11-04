@@ -1,4 +1,5 @@
 import asyncio, json, secrets, time, re, unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import httpx
@@ -50,7 +51,21 @@ def _serializar_detalhes(item):
     slug = item.slug or slugify(item.title or "", item.year)
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
-    return {"iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, "slug": slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description, "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, "url_stream": url_proxy, "url_stream_direto": item.url}
+    
+    # ⚡ FORMATA AS DATAS PARA O PADRÃO ISO DO JSON
+    created_iso = item.created_at.isoformat() + "Z" if getattr(item, 'created_at', None) else None
+    updated_iso = item.updated_at.isoformat() + "Z" if getattr(item, 'updated_at', None) else None
+
+    return {
+        "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, 
+        "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, 
+        "slug": slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description, 
+        "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, 
+        "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, 
+        "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, 
+        "created_at": created_iso, "updated_at": updated_iso, # ⚡ INCLUÍDO NO JSON
+        "url_stream": url_proxy, "url_stream_direto": item.url
+    }
 
 async def _get_serie_completa(s: SerieDB):
     base_data = _serializar_detalhes(s)
@@ -61,7 +76,7 @@ async def _get_serie_completa(s: SerieDB):
             info_iptv["poster"] = base_data["poster"]; info_iptv["backdrop"] = base_data["backdrop"]
             info_iptv["logo"] = base_data["logo"]; info_iptv["rating_avg"] = base_data["rating_avg"]
             info_iptv["age_rating"] = base_data["age_rating"]; info_iptv["genres"] = base_data["genres"]
-            info_iptv["type"] = "series"
+            info_iptv["type"] = "series"; info_iptv["created_at"] = base_data["created_at"]
             if "episodios" in info_iptv: info_iptv["episodes"] = info_iptv["episodios"]
             return info_iptv
     except Exception as e: print(f"[API] Erro série {s.title}: {e}")
@@ -85,27 +100,18 @@ async def home(force: bool = False, response: Response = None):
         return await home_module.build_home_async(db, force=force)
     finally: db.close()
 
-# ⚡ ROTA DE CATEGORIAS CORRIGIDA (Mantém todas, exceto anos e lixos técnicos)
 @app.get("/categorias")
 def categorias(db: Session = Depends(get_db)):
     f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas = set(f_cats + s_cats)
-    
-    # Agora ignoramos APENAS os anos (ex: "2024") e termos genéricos de qualidade.
-    # Documentários, Animação, Abc, etc., vão aparecer!
     ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO"]
-    
     result = []
     for cat in todas:
         if not cat: continue
         cat_upper = cat.upper()
-        
-        # Ignora se for um ano puro (ex: "2024") ou estiver na lista de lixo técnico
-        if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): 
-            continue
+        if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): continue
         result.append(cat)
-        
     result.sort()
     return {"filmes": result, "series": result, "todos": result}
 
