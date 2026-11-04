@@ -8,7 +8,7 @@ from config import TMDB_ENABLED, PUBLIC_BASE_URL
 
 _HOME_CACHE = {}
 _HOME_CACHE_TS = 0
-CACHE_TTL = 900
+CACHE_TTL = 60  # ⚡ CACHE REDUZIDO PARA 1 MINUTO
 
 def limpar_cache():
     global _HOME_CACHE, _HOME_CACHE_TS
@@ -61,29 +61,37 @@ def _construir_colecoes(db: Session) -> list:
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
+    # 1. TOP 10
     top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star", min_itens=1)
 
     top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star", min_itens=1)
 
+    # 2. EM ALTA
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
 
+    # 3. RECENTES INTELIGENTES (Filmes + Séries misturados, ordenados por Nota)
+    # Pega os 50 mais novos de cada
+    recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(50).all()
+    recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(50).all()
+    
+    # Junta todos e ordena pela nota (se a nota for bombada, vai pro topo, independente de ter sido o último adicionado)
+    recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
+    add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
+
+    # 4. TENDÊNCIAS
     ano_limite = datetime.now().year - 1
     tend_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.0, FilmeDB.year >= ano_limite, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(15).all()
     tend_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.0, SerieDB.year >= ano_limite, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(15).all()
     add("tendencias", "📈 Tendências da Semana", sorted(tend_f + tend_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
+    # 5. RECOMENDAÇÕES
     rec_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(20).all()
     rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(20).all()
     add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
 
-    recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(20).all()
-    add("filmes_recentes", "🆕 Chegou Agora (Filmes)", recentes_f, "filme", "clock")
-
-    recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(20).all()
-    add("series_recentes", "🆕 Chegou Agora (Séries)", recentes_s, "serie", "clock")
-
+    # 6. STREAMINGS (Netflix, Amazon, etc)
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
@@ -98,7 +106,7 @@ def _construir_colecoes(db: Session) -> list:
 
     for cat in cats_ordenadas:
         if len(colecoes) >= MAX_COLECOES: break
-        if not cat or cat.upper() in ignorar or cat.isdigit(): continue
+        if not cat or cat.upper() in ignorar or (cat.isdigit() and len(cat) == 4): continue
         items_f = db.query(FilmeDB).filter(FilmeDB.coletany == cat).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
         items_s = db.query(SerieDB).filter(SerieDB.coletany == cat).order_by(desc(SerieDB.rating_avg)).limit(20).all()
         add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder", min_itens=3)

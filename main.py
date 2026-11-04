@@ -85,20 +85,25 @@ async def home(force: bool = False, response: Response = None):
         return await home_module.build_home_async(db, force=force)
     finally: db.close()
 
-# ⚡ NOVA ROTA DE CATEGORIAS LIMPA
+# ⚡ ROTA DE CATEGORIAS CORRIGIDA (Mantém todas, exceto anos e lixos técnicos)
 @app.get("/categorias")
 def categorias(db: Session = Depends(get_db)):
     f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
     todas = set(f_cats + s_cats)
     
-    ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+    # Agora ignoramos APENAS os anos (ex: "2024") e termos genéricos de qualidade.
+    # Documentários, Animação, Abc, etc., vão aparecer!
+    ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO"]
     
     result = []
     for cat in todas:
         if not cat: continue
         cat_upper = cat.upper()
-        if cat_upper in ignorar or cat.isdigit(): continue
+        
+        # Ignora se for um ano puro (ex: "2024") ou estiver na lista de lixo técnico
+        if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): 
+            continue
         result.append(cat)
         
     result.sort()
