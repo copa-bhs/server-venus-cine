@@ -1,6 +1,7 @@
 import time
 import json
 import httpx
+import asyncio
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -56,7 +57,8 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     colecoes = []
     MAX_COLECOES = 12
 
-    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=3):
+    # ⚡ min_itens caiu para 1. Basta ter 1 filme para a prateleira aparecer.
+    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=1):
         if len(colecoes) >= MAX_COLECOES: return
         if not items: return
         vistos = set()
@@ -72,46 +74,46 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
-    # ⚡ 1. TOP 10 REAL-TIME (TMDB)
+    # 1. TOP 10 REAL-TIME (TMDB) - Sem filtro de poster
     if trending_filmes:
         top_tmdb_f = db.query(FilmeDB).filter(FilmeDB.tmdb_id.in_(trending_filmes)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
-        add("top10_filmes", "🏆 Top 10 Filmes", top_tmdb_f, "filme", "star", min_itens=1)
+        add("top10_filmes", "🏆 Top 10 Filmes", top_tmdb_f, "filme", "star")
     else:
-        top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
-        add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star", min_itens=1)
+        top_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
+        add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star")
 
     if trending_series:
         top_tmdb_s = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(trending_series)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
-        add("top10_series", "🏆 Top 10 Séries", top_tmdb_s, "serie", "star", min_itens=1)
+        add("top10_series", "🏆 Top 10 Séries", top_tmdb_s, "serie", "star")
     else:
-        top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
-        add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star", min_itens=1)
+        top_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(10).all()
+        add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    # ⚡ 2. EM ALTA (Mistura do Trending)
+    # 2. EM ALTA (Mistura do Trending)
     em_alta_f = db.query(FilmeDB).filter(FilmeDB.tmdb_id.in_(trending_filmes)).limit(10).all() if trending_filmes else top_f
     em_alta_s = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(trending_series)).limit(10).all() if trending_series else top_s
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_f + em_alta_s, "misto", "fire")
 
-    # ⚡ 3. RECENTES (Usando a Data Real)
-    recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None), FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
-    recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None), SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
+    # 3. RECENTES (Usando ID como fallback caso created_at esteja nulo)
+    recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
+    recentes_s = db.query(SerieDB).filter(SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
     
     if not recentes_f and not recentes_s:
-        recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(30).all()
-        recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(30).all()
+        recentes_f = db.query(FilmeDB).order_by(desc(FilmeDB.id)).limit(30).all()
+        recentes_s = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(30).all()
 
     recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
     add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
 
-    # 4. TENDÊNCIAS
+    # 4. TENDÊNCIAS - Sem filtro de poster e nota
     ano_limite = datetime.now().year - 1
-    tend_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.0, FilmeDB.year >= ano_limite, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(15).all()
-    tend_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.0, SerieDB.year >= ano_limite, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(15).all()
+    tend_f = db.query(FilmeDB).filter(FilmeDB.year >= ano_limite).order_by(desc(FilmeDB.year)).limit(15).all()
+    tend_s = db.query(SerieDB).filter(SerieDB.year >= ano_limite).order_by(desc(SerieDB.year)).limit(15).all()
     add("tendencias", "📈 Tendências da Semana", sorted(tend_f + tend_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
-    # 5. RECOMENDAÇÕES
-    rec_f = db.query(FilmeDB).filter(FilmeDB.rating_avg >= 6.5, FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.year)).limit(20).all()
-    rec_s = db.query(SerieDB).filter(SerieDB.rating_avg >= 6.5, SerieDB.poster.isnot(None)).order_by(desc(SerieDB.year)).limit(20).all()
+    # 5. RECOMENDAÇÕES - Sem filtro de poster e nota
+    rec_f = db.query(FilmeDB).order_by(desc(FilmeDB.year)).limit(20).all()
+    rec_s = db.query(SerieDB).order_by(desc(SerieDB.year)).limit(20).all()
     add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "sparkles")
 
     # 6. STREAMINGS
@@ -132,7 +134,7 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
         if not cat or cat.upper() in ignorar or (cat.isdigit() and len(cat) == 4): continue
         items_f = db.query(FilmeDB).filter(FilmeDB.coletany == cat).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
         items_s = db.query(SerieDB).filter(SerieDB.coletany == cat).order_by(desc(SerieDB.rating_avg)).limit(20).all()
-        add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder", min_itens=3)
+        add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder")
 
     return colecoes
 
