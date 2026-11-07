@@ -50,7 +50,7 @@ def _serializar_detalhes(item):
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
     
-    # ⚡ GERANDO URL COM PREFIXO PARA EVITAR CONFLITO
+    # ⚡ GERANDO URL COM PREFIXO PARA EVITAR CONFLITO DE VÍDEO
     prefix = "movie" if item.stream_type == "movie" else ("tv" if item.stream_type == "tv" else "live")
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/id/{prefix}_{item.iptv_id}.mp4" if base else f"/stream/id/{prefix}_{item.iptv_id}.mp4"
@@ -245,6 +245,7 @@ def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     if not item: raise HTTPException(404, "Não encontrado")
     return _serializar_detalhes(item)
 
+# ⚡ EXCLUSÃO LIMPANDO O CACHE
 @app.delete("/admin/item/{tipo}/{item_id}")
 def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
     try:
@@ -253,6 +254,7 @@ def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
         elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
         if it: db.delete(it); db.commit()
         _rebuild_slugs()
+        home_module.limpar_cache() # ⚡ LIMPA O CACHE PARA O FILME SUMIR DA HOME IMEDIATAMENTE
         return {"ok": True, "msg": "Excluído com sucesso"}
     except Exception as e:
         db.rollback(); raise HTTPException(500, f"Erro ao excluir: {str(e)}")
@@ -332,15 +334,11 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
-# ⚡ BUSCA COM PRIORIDADE DE ID
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
-    # 1. Tenta achar pelo IPTV ID
     f = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
-    # 2. Se não achar, tenta pelo TMDB ID
-    if not f:
-        f = db.query(FilmeDB).filter(FilmeDB.tmdb_id == item_id).first()
+    if not f: f = db.query(FilmeDB).filter(FilmeDB.tmdb_id == item_id).first()
     if f: return _serializar_detalhes(f)
     return await fetch_movie_info(item_id)
 
@@ -348,11 +346,8 @@ async def info_filme(item_id: str, db: Session = Depends(get_db)):
 @app.get("/info/tv/{item_id}")
 @app.get("/info/series/{item_id}")
 async def info_serie(item_id: str, db: Session = Depends(get_db)):
-    # 1. Tenta achar pelo IPTV ID
     s = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
-    # 2. Se não achar, tenta pelo TMDB ID
-    if not s:
-        s = db.query(SerieDB).filter(SerieDB.tmdb_id == item_id).first()
+    if not s: s = db.query(SerieDB).filter(SerieDB.tmdb_id == item_id).first()
     if s: return await _get_serie_completa(s)
     return await fetch_series_info(item_id)
 

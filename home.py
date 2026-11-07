@@ -63,26 +63,28 @@ async def _fetch_on_the_air_tmdb() -> list:
     except: pass
     return []
 
+# ⚡ FUNÇÃO BLINDADA: Garante os 10 itens sem falhar
 def _get_top10_misto(db: Session, Tabela, trending_ids: list):
     itens = []
     if trending_ids:
         itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(trending_ids)).order_by(desc(Tabela.rating_avg)).all()
+    
     if len(itens) < 10:
-        existentes_ids = {str(it.tmdb_id) for it in itens if it.tmdb_id}
-        existentes_ids.update({str(it.id) for it in itens})
+        existentes_ids = {str(it.id) for it in itens}
         extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(100).all()
         for ext in extras:
-            if str(ext.tmdb_id) not in existentes_ids and str(ext.id) not in existentes_ids:
+            if str(ext.id) not in existentes_ids:
                 itens.append(ext)
-                existentes_ids.add(str(ext.tmdb_id))
                 existentes_ids.add(str(ext.id))
                 if len(itens) >= 10: break
+                
     return itens[:10]
 
 def _get_novos_episodios(db: Session, on_the_air_ids: list):
     itens = []
     if on_the_air_ids:
         itens = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(on_the_air_ids)).all()
+        
     if len(itens) < 15:
         existentes_ids = {str(it.id) for it in itens}
         extras = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(50).all()
@@ -90,6 +92,7 @@ def _get_novos_episodios(db: Session, on_the_air_ids: list):
             if str(ext.id) not in existentes_ids:
                 itens.append(ext)
                 if len(itens) >= 15: break
+                
     return itens[:15]
 
 def _construir_colecoes(db: Session, trending_filmes: list, trending_series: list, on_the_air: list) -> list:
@@ -126,7 +129,7 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     top_s = _get_top10_misto(db, SerieDB, trending_series)
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    # 4. NOVOS EPISÓDIOS (Título exato para o home.js achar)
+    # 4. NOVOS EPISÓDIOS (Título exato para o app achar)
     novos_eps = _get_novos_episodios(db, on_the_air)
     add("novos_episodios", "📺 Novos Episódios", novos_eps, "serie", "tv")
 
