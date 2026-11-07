@@ -21,18 +21,18 @@ PASSWORD = IPTV_PASSWORD
 INFO_MOVIE_URL  = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_vod_info&vod_id={{id}}"
 INFO_SERIES_URL = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_series_info&series_id={{id}}"
 
-
+# ⚡ URLS COM PREFIXO NOVO
 def _url_proxy(item_id: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     if base:
-        return f"{base}/stream/id/{item_id}.mp4"
-    return f"/stream/id/{item_id}.mp4"
+        return f"{base}/stream/id/movie_{item_id}.mp4"
+    return f"/stream/id/movie_{item_id}.mp4"
 
 def _url_proxy_episodio(ep_id: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     if base:
-        return f"{base}/stream/id/{ep_id}.mp4"
-    return f"/stream/id/{ep_id}.mp4"
+        return f"{base}/stream/id/tv_{ep_id}.mp4"
+    return f"/stream/id/tv_{ep_id}.mp4"
 
 _EPISODE_PATTERNS = [
     re.compile(r'\s*[-–—]\s*S\d+\s*[E\xD7x]\s*\d+.*$', re.I),
@@ -201,7 +201,6 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
         traceback.print_exc()
 
     return payload
-
 
 async def fetch_series_info(item_id: str, force: bool = False) -> dict:
     url = INFO_SERIES_URL.format(id=item_id)

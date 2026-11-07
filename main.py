@@ -49,9 +49,11 @@ def _rebuild_slugs():
 def _serializar_detalhes(item):
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
-    slug = item.slug or slugify(item.title or "", item.year)
+    
+    # ⚡ GERANDO URL COM PREFIXO PARA EVITAR CONFLITO
+    prefix = "movie" if item.stream_type == "movie" else ("tv" if item.stream_type == "tv" else "live")
     base = (PUBLIC_BASE_URL or "").rstrip("/")
-    url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
+    url_proxy = f"{base}/stream/id/{prefix}_{item.iptv_id}.mp4" if base else f"/stream/id/{prefix}_{item.iptv_id}.mp4"
     
     created_iso = item.created_at.isoformat() + "Z" if getattr(item, 'created_at', None) else None
     updated_iso = item.updated_at.isoformat() + "Z" if getattr(item, 'updated_at', None) else None
@@ -59,7 +61,7 @@ def _serializar_detalhes(item):
     return {
         "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, 
         "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, 
-        "slug": slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description, 
+        "slug": item.slug, "type": item.type, "year": item.year, "duration": item.duration, "description": item.description, 
         "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, 
         "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, 
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, 
@@ -330,10 +332,15 @@ def admin_series(q: str | None = None, page: int = 1, size: int = 30, db: Sessio
     items = query.offset((page-1)*size).limit(size).all()
     return {"page": page, "total_items": query.count(), "items": [_serializar_detalhes(it) for it in items]}
 
+# ⚡ BUSCA COM PRIORIDADE DE ID
 @app.get("/info/filme/{item_id}")
 @app.get("/info/movie/{item_id}")
 async def info_filme(item_id: str, db: Session = Depends(get_db)):
-    f = db.query(FilmeDB).filter(or_(FilmeDB.iptv_id == item_id, FilmeDB.tmdb_id == item_id)).first()
+    # 1. Tenta achar pelo IPTV ID
+    f = db.query(FilmeDB).filter(FilmeDB.iptv_id == item_id).first()
+    # 2. Se não achar, tenta pelo TMDB ID
+    if not f:
+        f = db.query(FilmeDB).filter(FilmeDB.tmdb_id == item_id).first()
     if f: return _serializar_detalhes(f)
     return await fetch_movie_info(item_id)
 
@@ -341,7 +348,11 @@ async def info_filme(item_id: str, db: Session = Depends(get_db)):
 @app.get("/info/tv/{item_id}")
 @app.get("/info/series/{item_id}")
 async def info_serie(item_id: str, db: Session = Depends(get_db)):
-    s = db.query(SerieDB).filter(or_(SerieDB.iptv_id == item_id, SerieDB.tmdb_id == item_id)).first()
+    # 1. Tenta achar pelo IPTV ID
+    s = db.query(SerieDB).filter(SerieDB.iptv_id == item_id).first()
+    # 2. Se não achar, tenta pelo TMDB ID
+    if not s:
+        s = db.query(SerieDB).filter(SerieDB.tmdb_id == item_id).first()
     if s: return await _get_serie_completa(s)
     return await fetch_series_info(item_id)
 
