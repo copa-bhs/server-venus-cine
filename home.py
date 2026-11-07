@@ -1,10 +1,11 @@
 import time
 import json
+import httpx
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from db import Filme as FilmeDB, Serie as SerieDB, Slide as SlideDB
-from config import TMDB_ENABLED, PUBLIC_BASE_URL
+from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, PUBLIC_BASE_URL
 
 _HOME_CACHE = {}
 _HOME_CACHE_TS = 0
@@ -41,7 +42,17 @@ def _construir_hero(db: Session) -> list:
         })
     return hero
 
-def _construir_colecoes(db: Session) -> list:
+async def _fetch_trending_tmdb(tipo: str) -> list:
+    if not TMDB_ENABLED: return []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"https://api.themoviedb.org/3/trending/{tipo}/day", params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE})
+            if r.status_code == 200:
+                return [item['id'] for item in r.json().get('results', [])][:15]
+    except: pass
+    return []
+
+def _construir_colecoes(db: Session, trending_filmes: list, trending_series: list) -> list:
     colecoes = []
     MAX_COLECOES = 12
 
@@ -61,28 +72,34 @@ def _construir_colecoes(db: Session) -> list:
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
-    # 1. TOP 10
-    top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
-    add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star", min_itens=1)
+    # ⚡ 1. TOP 10 REAL-TIME (TMDB)
+    if trending_filmes:
+        top_tmdb_f = db.query(FilmeDB).filter(FilmeDB.tmdb_id.in_(trending_filmes)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
+        add("top10_filmes", "🏆 Top 10 Filmes", top_tmdb_f, "filme", "star", min_itens=1)
+    else:
+        top_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
+        add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star", min_itens=1)
 
-    top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
-    add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star", min_itens=1)
+    if trending_series:
+        top_tmdb_s = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(trending_series)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
+        add("top10_series", "🏆 Top 10 Séries", top_tmdb_s, "serie", "star", min_itens=1)
+    else:
+        top_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.rating_avg)).limit(10).all()
+        add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star", min_itens=1)
 
-    # 2. EM ALTA
-    add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", sorted(top_f + top_s, key=lambda x: x.rating_avg or 0, reverse=True), "misto", "fire")
+    # ⚡ 2. EM ALTA (Mistura do Trending)
+    em_alta_f = db.query(FilmeDB).filter(FilmeDB.tmdb_id.in_(trending_filmes)).limit(10).all() if trending_filmes else top_f
+    em_alta_s = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(trending_series)).limit(10).all() if trending_series else top_s
+    add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_f + em_alta_s, "misto", "fire")
 
-    # 3. RECENTES INTELIGENTES (Data real do IPTV + Nota)
-    # Pega os últimos 30 de cada baseados na data real de criação (created_at)
+    # ⚡ 3. RECENTES (Usando a Data Real)
     recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None), FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
     recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None), SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
     
-    # Se por algum motivo o created_at estiver nulo em tudo, usa o ID como fallback
     if not recentes_f and not recentes_s:
         recentes_f = db.query(FilmeDB).filter(FilmeDB.poster.isnot(None)).order_by(desc(FilmeDB.id)).limit(30).all()
         recentes_s = db.query(SerieDB).filter(SerieDB.poster.isnot(None)).order_by(desc(SerieDB.id)).limit(30).all()
 
-    # O Algoritmo: Pega os 60 itens mais novos e ordena pela nota. 
-    # Se você adicionou um filme nota 9.5 ontem e um nota 5.0 hoje, o 9.5 ficará em primeiro!
     recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
     add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
 
@@ -124,8 +141,11 @@ async def build_home_async(db: Session, force: bool = False) -> dict:
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < CACHE_TTL:
         return _HOME_CACHE
 
+    # Busca os IDs em alta no TMDB ao mesmo tempo
+    trending_f, trending_s = await asyncio.gather(_fetch_trending_tmdb("movie"), _fetch_trending_tmdb("tv"))
+
     hero = _construir_hero(db)
-    colecoes = _construir_colecoes(db)
+    colecoes = _construir_colecoes(db, trending_f, trending_s)
     
     resposta = {
         "gerado_em": time.time(), 

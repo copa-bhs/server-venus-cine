@@ -12,7 +12,7 @@ import logs
 from config import (
     TMDB_API_KEY, IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, USER_AGENT, CACHE_DIR
 )
-from tmdb import normalizar_classificacao # ⚡ IMPORTANDO A TRADUÇÃO AQUI TAMBÉM
+from tmdb import normalizar_classificacao
 
 ARQUIVO_CATALOGO = CACHE_DIR / "catalogo.json"
 ARQUIVO_FALHAS = CACHE_DIR / "falhas.json"
@@ -67,9 +67,7 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
             for c in d.get('content_ratings', {}).get('results', []):
                 if c.get('iso_3166_1') in ['BR', 'US'] and c.get('rating', '').strip(): age_rating = c['rating'].strip(); break
 
-        # ⚡ APLICANDO A TRADUÇÃO AQUI
-        if age_rating:
-            age_rating = normalizar_classificacao(age_rating)
+        if age_rating: age_rating = normalizar_classificacao(age_rating)
 
         titulo_base = d.get('title') or d.get('name') or ""
         slug_gerado = re.sub(r'[^a-z0-9]+', '-', titulo_base.lower()).strip('-')
@@ -90,7 +88,7 @@ async def _obter_detalhes_tmdb(client, tmdb_id, tipo):
             "genres": [g['name'] for g in d.get('genres', [])],
             "age_rating": age_rating
         }
-    except Exception as e:
+    except Exception:
         return None
 
 async def processar_item(client, item, semaforo):
@@ -112,8 +110,7 @@ async def processar_item(client, item, semaforo):
             try:
                 dt = datetime.fromtimestamp(ts_added, tz=timezone.utc)
                 created_at_iso = dt.isoformat().replace("+00:00", "Z")
-            except:
-                pass
+            except: pass
 
         if tmdb_id:
             meta = await _obter_detalhes_tmdb(client, tmdb_id, item["tipo"])

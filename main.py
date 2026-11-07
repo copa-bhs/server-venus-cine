@@ -46,24 +46,16 @@ def _rebuild_slugs():
                         "canais": [{"id": c.iptv_id, "url": c.url, "titulo": c.title} for c in canais]})
     finally: db.close()
 
-def _serializar_leve(item):
-    try: generos = json.loads(item.genres) if item.genres else []
-    except: generos = []
-    tipo_final = "movie" if item.stream_type == "movie" else "series"
-    return {
-        "iptv_id": str(item.iptv_id), "title": item.title, "poster": item.poster, "backdrop": item.backdrop,
-        "logo": item.logo, "year": item.year, "rating_avg": item.rating_avg, "age_rating": item.age_rating,
-        "genres": generos, "type": tipo_final
-    }
-
 def _serializar_detalhes(item):
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
     slug = item.slug or slugify(item.title or "", item.year)
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/{slug}.mp4" if base else f"/stream/{slug}.mp4"
+    
     created_iso = item.created_at.isoformat() + "Z" if getattr(item, 'created_at', None) else None
     updated_iso = item.updated_at.isoformat() + "Z" if getattr(item, 'updated_at', None) else None
+
     return {
         "iptv_id": str(item.iptv_id), "stream_type": item.stream_type, "coletany": item.coletany, 
         "tmdb_id": item.tmdb_id, "imdb_id": item.imdb_id, "title": item.title, "original_title": item.original_title, 
@@ -71,7 +63,7 @@ def _serializar_detalhes(item):
         "poster": item.poster, "logo": item.logo, "backdrop": item.backdrop, "rating_avg": item.rating_avg, 
         "rating_count": item.rating_count, "views_count": item.views_count, "premium": item.premium, 
         "audio_type": item.audio_type, "genres": generos, "age_rating": item.age_rating, 
-        "created_at": created_iso, "updated_at": updated_iso,
+        "created_at": created_iso, "updated_at": updated_iso, 
         "url_stream": url_proxy, "url_stream_direto": item.url
     }
 
@@ -123,36 +115,24 @@ def categorias(db: Session = Depends(get_db)):
     result.sort()
     return {"filmes": result, "series": result, "todos": result}
 
-# ⚡ ROTA DE BUSCA RESTAURADA E CORRIGIDA
 @app.get("/buscar")
 def buscar(q: str, tipo: str | None = None, page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
     q_norm = f"%{q}%"
     resultados = []
-    
-    # Busca em Filmes
     if tipo in (None, "filme", "movie"):
-        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(100).all():
-            resultados.append(f)
-            
-    # Busca em Séries
+        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(100).all(): resultados.append(f)
     if tipo in (None, "serie", "series"):
-        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(100).all():
-            resultados.append(s)
+        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(100).all(): resultados.append(s)
 
-    # Paginação
     total = len(resultados)
     start = (page - 1) * size
     end = start + size
     paged = resultados[start:end]
     
     return {
-        "page": page,
-        "page_size": size,
-        "total_items": total,
-        "total_pages": (total + size - 1) // size,
-        "has_next": end < total,
-        "has_prev": page > 1,
-        "items": [_serializar_leve(it) for it in paged]
+        "page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1) // size,
+        "has_next": end < total, "has_prev": page > 1,
+        "items": [_serializar_detalhes(it) for it in paged]
     }
 
 async def _task_importar():
@@ -246,18 +226,9 @@ async def admin_item_sync_tmdb(tipo: str, item_id: str, db: Session = Depends(ge
         meta = await iptv_catalog._obter_detalhes_tmdb(client, tmdb_id, db_type)
         if not meta: raise HTTPException(500, "Erro ao buscar detalhes no TMDB")
         
-        item.tmdb_id = meta.get("tmdb_id")
-        item.imdb_id = meta.get("imdb_id")
-        item.title = meta.get("title")
-        item.original_title = meta.get("original_title")
-        item.slug = meta.get("slug")
-        item.duration = meta.get("duration")
-        item.description = meta.get("description")
-        item.poster = meta.get("poster")
-        item.logo = meta.get("logo")
-        item.backdrop = meta.get("backdrop")
-        item.rating_avg = meta.get("rating_avg", 0)
-        item.rating_count = meta.get("rating_count", 0)
+        item.tmdb_id = meta.get("tmdb_id"); item.imdb_id = meta.get("imdb_id"); item.title = meta.get("title"); item.original_title = meta.get("original_title")
+        item.slug = meta.get("slug"); item.duration = meta.get("duration"); item.description = meta.get("description"); item.poster = meta.get("poster")
+        item.logo = meta.get("logo"); item.backdrop = meta.get("backdrop"); item.rating_avg = meta.get("rating_avg", 0); item.rating_count = meta.get("rating_count", 0)
         item.genres = json.dumps(meta.get("genres", []), ensure_ascii=False)
         
         raw_age = meta.get("age_rating")
