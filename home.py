@@ -2,7 +2,7 @@ import time
 import json
 import httpx
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from db import Filme as FilmeDB, Serie as SerieDB, Slide as SlideDB
@@ -19,7 +19,6 @@ def limpar_cache():
     print("[Home] Cache da Home limpo.")
 
 def _parse_genres(genres_raw):
-    """Trata de forma segura o parse de JSON de géneros para evitar quebras no endpoint."""
     if not genres_raw:
         return []
     if isinstance(genres_raw, list):
@@ -30,7 +29,8 @@ def _parse_genres(genres_raw):
     except Exception:
         return []
 
-def _serializar_leve(item):
+def _serializar_leve(item, badge_especial=None):
+    """Serializa o item e injeta dinamicamente o selo inteligente gerado pelo backend."""
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
     return {
         "iptv_id": str(getattr(item, "iptv_id", None) or item.id),
@@ -42,7 +42,8 @@ def _serializar_leve(item):
         "rating_avg": float(getattr(item, "rating_avg", 0.0) or 0.0),
         "age_rating": getattr(item, "age_rating", None),
         "genres": _parse_genres(getattr(item, "genres", None)),
-        "type": tipo_final
+        "type": tipo_final,
+        "badge": badge_especial # 🧠 O cérebro envia a tag pronta para o front-end exibir
     }
 
 def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -> list:
@@ -50,7 +51,6 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
     hero = []
     vistos_ids = set()
 
-    # 1. Adiciona os slides manuais cadastrados pelo admin
     for s in slides:
         ref = db.query(FilmeDB).get(s.ref_id) if s.ref_tipo == "filme" else db.query(SerieDB).get(s.ref_id)
         if not ref:
@@ -74,7 +74,6 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
             "generos": _parse_genres(ref.genres)
         })
 
-    # 2. SISTEMA INTELIGENTE: Se houver menos de 7 slides, completa com os melhores/em alta do servidor
     TARGET_HERO_COUNT = 7
     if len(hero) < TARGET_HERO_COUNT:
         extras_f = _get_top10_misto(db, FilmeDB, trending_filmes)
@@ -122,6 +121,7 @@ async def _fetch_trending_tmdb(tipo: str) -> list:
     return []
 
 async def _fetch_on_the_air_tmdb() -> list:
+    """Busca séries que estão ativas com episódios recentes no TMDb (The TV Movie Database)"""
     if not TMDB_ENABLED:
         return []
     try:
@@ -163,6 +163,7 @@ def _get_top10_misto(db: Session, Tabela, trending_ids: list):
     return itens[:10]
 
 def _get_novos_episodios(db: Session, on_the_air_ids: list):
+    """Identifica com inteligência do TMDb quais séries ganharam novos episódios ou temporadas"""
     itens = []
     vistos_ids = set()
 
@@ -192,7 +193,7 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     colecoes = []
     MAX_COLECOES = 12
 
-    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=1):
+    def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=1, badge_custom=None):
         if len(colecoes) >= MAX_COLECOES:
             return
         if not items:
@@ -206,12 +207,14 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
                 items_unicos.append(it)
         if len(items_unicos) < min_itens:
             return
+        
+        serialized_items = [_serializar_leve(it, badge_especial=badge_custom) for it in items_unicos]
         colecoes.append({
             "id": id_,
             "titulo": titulo,
             "icon": icon,
             "tipo": tipo_padrao,
-            "items": [_serializar_leve(it) for it in items_unicos]
+            "items": serialized_items
         })
 
     # 1. EM ALTA
@@ -228,9 +231,9 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     top_s = _get_top10_misto(db, SerieDB, trending_series)
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    # 4. NOVOS EPISÓDIOS
+    # 4. NOVOS EPISÓDIOS (🧠 Cérebro define o selo inteligente aqui)
     novos_eps = _get_novos_episodios(db, on_the_air)
-    add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv")
+    add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv", badge_custom="NOVOS EPISÓDIOS")
 
     # 5. RECENTES
     recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
