@@ -45,18 +45,26 @@ def _serializar_leve(item):
         "type": tipo_final
     }
 
-def _construir_hero(db: Session) -> list:
+def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -> list:
     slides = db.query(SlideDB).filter(SlideDB.ativo == True).order_by(SlideDB.ordem).all()
     hero = []
+    vistos_ids = set()
+
+    # 1. Adiciona os slides manuais cadastrados pelo admin
     for s in slides:
         ref = db.query(FilmeDB).get(s.ref_id) if s.ref_tipo == "filme" else db.query(SerieDB).get(s.ref_id)
         if not ref:
             continue
+        item_id = str(getattr(ref, "iptv_id", None) or ref.id)
+        if item_id in vistos_ids:
+            continue
+        vistos_ids.add(item_id)
+
         hero.append({
-            "id": str(getattr(ref, "iptv_id", None) or ref.id),
+            "id": item_id,
             "tipo": "filme" if s.ref_tipo == "filme" else "serie",
             "titulo": s.titulo or ref.title,
-            "banner": s.banner or ref.backdrop,
+            "banner": s.banner or ref.backdrop or ref.poster,
             "capa": ref.poster,
             "logo": s.logo or ref.logo,
             "sinopse": s.sinopse or getattr(ref, "description", "") or "",
@@ -65,6 +73,37 @@ def _construir_hero(db: Session) -> list:
             "ano": ref.year,
             "generos": _parse_genres(ref.genres)
         })
+
+    # 2. SISTEMA INTELIGENTE: Se houver menos de 7 slides, completa com os melhores/em alta do servidor
+    TARGET_HERO_COUNT = 7
+    if len(hero) < TARGET_HERO_COUNT:
+        extras_f = _get_top10_misto(db, FilmeDB, trending_filmes)
+        extras_s = _get_top10_misto(db, SerieDB, trending_series)
+        extras_mix = sorted(extras_f + extras_s, key=lambda x: (x.rating_avg or 0), reverse=True)
+
+        for ref in extras_mix:
+            if len(hero) >= TARGET_HERO_COUNT:
+                break
+            item_id = str(getattr(ref, "iptv_id", None) or ref.id)
+            if item_id in vistos_ids:
+                continue
+            vistos_ids.add(item_id)
+
+            tipo_ref = "filme" if isinstance(ref, FilmeDB) else "serie"
+            hero.append({
+                "id": item_id,
+                "tipo": tipo_ref,
+                "titulo": getattr(ref, "title", "Sem Título"),
+                "banner": getattr(ref, "backdrop", None) or getattr(ref, "poster", None),
+                "capa": getattr(ref, "poster", None),
+                "logo": getattr(ref, "logo", None),
+                "sinopse": getattr(ref, "description", "") or "",
+                "score": float(getattr(ref, "rating_avg", 0.0) or 0.0),
+                "classificacao": getattr(ref, "age_rating", None),
+                "ano": getattr(ref, "year", None),
+                "generos": _parse_genres(getattr(ref, "genres", None))
+            })
+
     return hero
 
 async def _fetch_trending_tmdb(tipo: str) -> list:
@@ -101,7 +140,6 @@ def _get_top10_misto(db: Session, Tabela, trending_ids: list):
     itens = []
     vistos_ids = set()
 
-    # 1. Puxa primeiro da lista do TMDb Trending se disponível no banco local
     if trending_ids:
         db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(trending_ids)).all()
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
@@ -113,7 +151,6 @@ def _get_top10_misto(db: Session, Tabela, trending_ids: list):
             if len(itens) >= 10:
                 break
 
-    # 2. Garante estritamente que preenche até 10 itens puxando os mais bem avaliados do banco
     if len(itens) < 10:
         extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(50).all()
         for ext in extras:
@@ -242,16 +279,14 @@ async def build_home_async(db: Session, force: bool = False) -> dict:
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < CACHE_TTL:
         return _HOME_CACHE
 
-    # Puxa chamadas HTTP assíncronas do TMDb sem travar o endpoint
     trending_f, trending_s, on_the_air = await asyncio.gather(
         _fetch_trending_tmdb("movie"), 
         _fetch_trending_tmdb("tv"),
         _fetch_on_the_air_tmdb()
     )
 
-    # Executa a montagem do DB em thread separada para o asyncio não bloquear a Splash Screen
     def _montar_tudo():
-        hero = _construir_hero(db)
+        hero = _construir_hero(db, trending_f, trending_s)
         colecoes = _construir_colecoes(db, trending_f, trending_s, on_the_air)
         return hero, colecoes
 
