@@ -18,14 +18,31 @@ def limpar_cache():
     _HOME_CACHE_TS = 0
     print("[Home] Cache da Home limpo.")
 
+def _parse_genres(genres_raw):
+    """Trata de forma segura o parse de JSON de géneros para evitar quebras no endpoint."""
+    if not genres_raw:
+        return []
+    if isinstance(genres_raw, list):
+        return genres_raw
+    try:
+        parsed = json.loads(genres_raw)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
 def _serializar_leve(item):
-    try: generos = json.loads(item.genres) if item.genres else []
-    except: generos = []
-    tipo_final = "movie" if item.stream_type == "movie" else "series"
+    tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
     return {
-        "iptv_id": str(item.iptv_id), "title": item.title, "poster": item.poster, "backdrop": item.backdrop,
-        "logo": item.logo, "year": item.year, "rating_avg": item.rating_avg, "age_rating": item.age_rating,
-        "genres": generos, "type": tipo_final
+        "iptv_id": str(getattr(item, "iptv_id", None) or item.id),
+        "title": getattr(item, "title", "") or "Sem título",
+        "poster": getattr(item, "poster", None),
+        "backdrop": getattr(item, "backdrop", None),
+        "logo": getattr(item, "logo", None),
+        "year": getattr(item, "year", None),
+        "rating_avg": float(getattr(item, "rating_avg", 0.0) or 0.0),
+        "age_rating": getattr(item, "age_rating", None),
+        "genres": _parse_genres(getattr(item, "genres", None)),
+        "type": tipo_final
     }
 
 def _construir_hero(db: Session) -> list:
@@ -33,66 +50,105 @@ def _construir_hero(db: Session) -> list:
     hero = []
     for s in slides:
         ref = db.query(FilmeDB).get(s.ref_id) if s.ref_tipo == "filme" else db.query(SerieDB).get(s.ref_id)
-        if not ref: continue
+        if not ref:
+            continue
         hero.append({
-            "id": str(ref.iptv_id), "tipo": "filme" if s.ref_tipo == "filme" else "serie",
-            "titulo": s.titulo or ref.title, "banner": s.banner or ref.backdrop,
-            "capa": ref.poster, "logo": s.logo or ref.logo, "sinopse": s.sinopse or ref.description,
-            "score": ref.rating_avg, "classificacao": ref.age_rating, "ano": ref.year,
-            "generos": json.loads(ref.genres) if ref.genres else []
+            "id": str(getattr(ref, "iptv_id", None) or ref.id),
+            "tipo": "filme" if s.ref_tipo == "filme" else "serie",
+            "titulo": s.titulo or ref.title,
+            "banner": s.banner or ref.backdrop,
+            "capa": ref.poster,
+            "logo": s.logo or ref.logo,
+            "sinopse": s.sinopse or getattr(ref, "description", "") or "",
+            "score": float(ref.rating_avg or 0.0),
+            "classificacao": ref.age_rating,
+            "ano": ref.year,
+            "generos": _parse_genres(ref.genres)
         })
     return hero
 
 async def _fetch_trending_tmdb(tipo: str) -> list:
-    if not TMDB_ENABLED: return []
+    if not TMDB_ENABLED:
+        return []
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"https://api.themoviedb.org/3/trending/{tipo}/day", params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE})
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(
+                f"https://api.themoviedb.org/3/trending/{tipo}/day",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE}
+            )
             if r.status_code == 200:
                 return [item['id'] for item in r.json().get('results', [])][:25]
-    except: pass
+    except Exception:
+        pass
     return []
 
 async def _fetch_on_the_air_tmdb() -> list:
-    if not TMDB_ENABLED: return []
+    if not TMDB_ENABLED:
+        return []
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"https://api.themoviedb.org/3/tv/on_the_air", params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE})
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(
+                "https://api.themoviedb.org/3/tv/on_the_air",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE}
+            )
             if r.status_code == 200:
                 return [item['id'] for item in r.json().get('results', [])][:25]
-    except: pass
+    except Exception:
+        pass
     return []
 
-# ⚡ FUNÇÃO BLINDADA: Garante os 10 itens sem falhar
 def _get_top10_misto(db: Session, Tabela, trending_ids: list):
     itens = []
+    vistos_ids = set()
+
+    # 1. Puxa primeiro da lista do TMDb Trending se disponível no banco local
     if trending_ids:
-        itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(trending_ids)).order_by(desc(Tabela.rating_avg)).all()
-    
+        db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(trending_ids)).all()
+        map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
+        for t_id in trending_ids:
+            item = map_db.get(str(t_id))
+            if item and item.id not in vistos_ids:
+                vistos_ids.add(item.id)
+                itens.append(item)
+            if len(itens) >= 10:
+                break
+
+    # 2. Garante estritamente que preenche até 10 itens puxando os mais bem avaliados do banco
     if len(itens) < 10:
-        existentes_ids = {str(it.id) for it in itens}
-        extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(100).all()
+        extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(50).all()
         for ext in extras:
-            if str(ext.id) not in existentes_ids:
+            if ext.id not in vistos_ids:
+                vistos_ids.add(ext.id)
                 itens.append(ext)
-                existentes_ids.add(str(ext.id))
-                if len(itens) >= 10: break
-                
+                if len(itens) >= 10:
+                    break
+
     return itens[:10]
 
 def _get_novos_episodios(db: Session, on_the_air_ids: list):
     itens = []
+    vistos_ids = set()
+
     if on_the_air_ids:
-        itens = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(on_the_air_ids)).all()
-        
+        db_itens = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(on_the_air_ids)).all()
+        map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
+        for t_id in on_the_air_ids:
+            item = map_db.get(str(t_id))
+            if item and item.id not in vistos_ids:
+                vistos_ids.add(item.id)
+                itens.append(item)
+            if len(itens) >= 15:
+                break
+
     if len(itens) < 15:
-        existentes_ids = {str(it.id) for it in itens}
         extras = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(50).all()
         for ext in extras:
-            if str(ext.id) not in existentes_ids:
+            if ext.id not in vistos_ids:
+                vistos_ids.add(ext.id)
                 itens.append(ext)
-                if len(itens) >= 15: break
-                
+                if len(itens) >= 15:
+                    break
+
     return itens[:15]
 
 def _construir_colecoes(db: Session, trending_filmes: list, trending_series: list, on_the_air: list) -> list:
@@ -100,18 +156,24 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     MAX_COLECOES = 12
 
     def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=1):
-        if len(colecoes) >= MAX_COLECOES: return
-        if not items: return
+        if len(colecoes) >= MAX_COLECOES:
+            return
+        if not items:
+            return
         vistos = set()
         items_unicos = []
         for it in items:
-            chave = str(it.tmdb_id) if it.tmdb_id else (it.title.lower() if it.title else str(it.id))
+            chave = it.id
             if chave not in vistos:
                 vistos.add(chave)
                 items_unicos.append(it)
-        if len(items_unicos) < min_itens: return 
+        if len(items_unicos) < min_itens:
+            return
         colecoes.append({
-            "id": id_, "titulo": titulo, "icon": icon, "tipo": tipo_padrao,
+            "id": id_,
+            "titulo": titulo,
+            "icon": icon,
+            "tipo": tipo_padrao,
             "items": [_serializar_leve(it) for it in items_unicos]
         })
 
@@ -129,9 +191,9 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     top_s = _get_top10_misto(db, SerieDB, trending_series)
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    # 4. NOVOS EPISÓDIOS (Título exato para o app achar)
+    # 4. NOVOS EPISÓDIOS
     novos_eps = _get_novos_episodios(db, on_the_air)
-    add("novos_episodios", "📺 Novos Episódios", novos_eps, "serie", "tv")
+    add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv")
 
     # 5. RECENTES
     recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
@@ -180,21 +242,30 @@ async def build_home_async(db: Session, force: bool = False) -> dict:
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < CACHE_TTL:
         return _HOME_CACHE
 
+    # Puxa chamadas HTTP assíncronas do TMDb sem travar o endpoint
     trending_f, trending_s, on_the_air = await asyncio.gather(
         _fetch_trending_tmdb("movie"), 
         _fetch_trending_tmdb("tv"),
         _fetch_on_the_air_tmdb()
     )
 
-    hero = _construir_hero(db)
-    colecoes = _construir_colecoes(db, trending_f, trending_s, on_the_air)
+    # Executa a montagem do DB em thread separada para o asyncio não bloquear a Splash Screen
+    def _montar_tudo():
+        hero = _construir_hero(db)
+        colecoes = _construir_colecoes(db, trending_f, trending_s, on_the_air)
+        return hero, colecoes
+
+    hero, colecoes = await asyncio.to_thread(_montar_tudo)
     
     resposta = {
         "gerado_em": time.time(), 
         "tmdb_ativo": TMDB_ENABLED, 
         "hero": hero, 
         "colecoes": colecoes,
-        "stats": {"total_filmes": db.query(FilmeDB).count(), "total_series": db.query(SerieDB).count()}
+        "stats": {
+            "total_filmes": await asyncio.to_thread(lambda: db.query(FilmeDB).count()),
+            "total_series": await asyncio.to_thread(lambda: db.query(SerieDB).count())
+        }
     }
 
     _HOME_CACHE = resposta
