@@ -50,7 +50,6 @@ def _serializar_detalhes(item):
     try: generos = json.loads(item.genres) if item.genres else []
     except: generos = []
     
-    # ⚡ GERANDO URL COM PREFIXO PARA EVITAR CONFLITO DE VÍDEO
     prefix = "movie" if item.stream_type == "movie" else ("tv" if item.stream_type == "tv" else "live")
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     url_proxy = f"{base}/stream/id/{prefix}_{item.iptv_id}.mp4" if base else f"/stream/id/{prefix}_{item.iptv_id}.mp4"
@@ -69,10 +68,12 @@ def _serializar_detalhes(item):
         "url_stream": url_proxy, "url_stream_direto": item.url
     }
 
+# ⚡ FUNÇÃO COM TIMEOUT DE 8 SEGUNDOS
 async def _get_serie_completa(s: SerieDB):
     base_data = _serializar_detalhes(s)
     try:
-        info_iptv = await fetch_series_info(str(s.iptv_id))
+        # Se o IPTV demorar mais de 8 segundos, ele cancela e devolve o base_data
+        info_iptv = await asyncio.wait_for(fetch_series_info(str(s.iptv_id)), timeout=8.0)
         if info_iptv:
             info_iptv["title"] = base_data["title"]; info_iptv["description"] = base_data["description"]
             info_iptv["poster"] = base_data["poster"]; info_iptv["backdrop"] = base_data["backdrop"]
@@ -81,7 +82,10 @@ async def _get_serie_completa(s: SerieDB):
             info_iptv["type"] = "series"; info_iptv["created_at"] = base_data["created_at"]
             if "episodios" in info_iptv: info_iptv["episodes"] = info_iptv["episodios"]
             return info_iptv
-    except Exception as e: print(f"[API] Erro série {s.title}: {e}")
+    except asyncio.TimeoutError:
+        print(f"[API] Timeout ao buscar episódios do IPTV para {s.title}. Retornando dados do banco.")
+    except Exception as e: 
+        print(f"[API] Erro série {s.title}: {e}")
     return base_data
 
 @app.on_event("startup")
@@ -245,7 +249,6 @@ def admin_item_get(tipo: str, item_id: str, db: Session = Depends(get_db)):
     if not item: raise HTTPException(404, "Não encontrado")
     return _serializar_detalhes(item)
 
-# ⚡ EXCLUSÃO LIMPANDO O CACHE
 @app.delete("/admin/item/{tipo}/{item_id}")
 def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
     try:
@@ -254,7 +257,7 @@ def deletar_item(tipo: str, item_id: str, db: Session = Depends(get_db)):
         elif tipo == "canal": it = db.query(CanalDB).filter(CanalDB.iptv_id == item_id).first()
         if it: db.delete(it); db.commit()
         _rebuild_slugs()
-        home_module.limpar_cache() # ⚡ LIMPA O CACHE PARA O FILME SUMIR DA HOME IMEDIATAMENTE
+        home_module.limpar_cache()
         return {"ok": True, "msg": "Excluído com sucesso"}
     except Exception as e:
         db.rollback(); raise HTTPException(500, f"Erro ao excluir: {str(e)}")
