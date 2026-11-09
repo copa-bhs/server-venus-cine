@@ -1,68 +1,169 @@
+import asyncio, json, re, unicodedata
 import httpx
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import StreamingResponse
-from config import USER_AGENT, PROXY_READ_TIMEOUT, PROXY_CHUNK_SIZE
-
-router = APIRouter()
-
-_PROXY_MAP = {}
-
-def register_item(item_id: str, stream_url: str, title: str, tipo: str):
-    _PROXY_MAP[str(item_id)] = {
-        "url": stream_url,
-        "title": title,
-        "tipo": tipo
-    }
-
-_HTTP_CLIENT = httpx.AsyncClient(
-    timeout=httpx.Timeout(10.0, read=PROXY_READ_TIMEOUT),
-    follow_redirects=True,
-    limits=httpx.Limits(max_keepalive_connections=50, max_connections=200, keepalive_expiry=30.0)
+from fastapi import HTTPException, Request
+from fastapi.responses import StreamingResponse, Response
+from config import (
+    USER_AGENT, SLUG_MAP_FILMES_FILE, SLUG_MAP_SERIES_FILE, SLUG_MAP_CANAIS_FILE,
+    PROXY_ENABLED, PROXY_MAX_CONCURRENT, PROXY_MAX_PER_IP,
+    PROXY_CHUNK_SIZE, PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT,
 )
 
-@router.get("/stream/id/{slug}")
-async def proxy_stream(slug: str, request: Request):
-    clean_id = slug.replace("movie_", "").replace("tv_", "").split(".")[0]
-    
-    item = _PROXY_MAP.get(clean_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Stream não encontrado no mapeamento do proxy.")
-    
-    target_url = item["url"]
-    
+_active_total: int = 0
+_active_by_ip: dict = {}
+
+def stats() -> dict:
+    return {"ativo_total": _active_total, "limite_total": PROXY_MAX_CONCURRENT, "limite_por_ip": PROXY_MAX_PER_IP, "ips_conectados": len(_active_by_ip), "por_ip": dict(_active_by_ip)}
+
+def slugify(texto: str, ano=None) -> str:
+    if not texto: return ""
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = texto.encode("ascii", "ignore").decode("ascii")
+    texto = re.sub(r"[^\w\s-]", "", texto.lower())
+    texto = re.sub(r"[-\s]+", "-", texto).strip("-")
+    texto = re.sub(r"^(filme|serie|série|movie|tv|vod)[-\s]+", "", texto)
+    if ano:
+        try: texto = f"{texto}-{int(ano)}"
+        except Exception: pass
+    return texto or ""
+
+_SLUG_MAP: dict = {}
+_ID_MAP: dict   = {}
+_SLUG_MAP_FILMES: dict = {}
+_SLUG_MAP_SERIES: dict = {}
+_SLUG_MAP_CANAIS: dict = {}
+
+def limpar_tudo():
+    global _SLUG_MAP, _ID_MAP, _SLUG_MAP_FILMES, _SLUG_MAP_SERIES, _SLUG_MAP_CANAIS
+    _SLUG_MAP.clear(); _ID_MAP.clear(); _SLUG_MAP_FILMES.clear(); _SLUG_MAP_SERIES.clear(); _SLUG_MAP_CANAIS.clear()
+
+def build_slug_map(index: dict) -> dict:
+    global _SLUG_MAP, _ID_MAP, _SLUG_MAP_FILMES, _SLUG_MAP_SERIES, _SLUG_MAP_CANAIS
+    smap_filmes, smap_series, smap_canais, imap = {}, {}, {}, {}
+
+    def _add(target: dict, slug: str, dados: dict):
+        if not slug: return
+        base = slug; i = 2
+        while (slug in smap_filmes or slug in smap_series or slug in smap_canais):
+            slug = f"{base}-{i}"; i += 1
+        dados["slug"] = slug
+        target[slug] = dados
+        imap[str(dados.get("id"))] = dados
+
+    for f in index.get("filmes", []):
+        if not f.get("url"): continue
+        slug = slugify(f.get("titulo") or "", f.get("ano"))
+        _add(smap_filmes, slug, {"id": f"movie_{f.get('id')}", "url": f.get("url"), "titulo": f.get("titulo"), "tipo": "filme", "slug": slug})
+
+    for s in index.get("series", []):
+        titulo_base = slugify(s.get("titulo") or "")
+        if not titulo_base: continue
+        for ep in s.get("episodios", []):
+            t, e = ep.get("temporada"), ep.get("episodio")
+            if not ep.get("url") or not t or not e: continue
+            try: t_int, e_int = int(t), int(e)
+            except: continue
+            slug = f"{titulo_base}-t{t_int:02d}-e{e_int:02d}"
+            _add(smap_series, slug, {"id": f"tv_{ep.get('id')}", "url": ep.get("url"), "titulo": f"{s.get('titulo')} T{t_int:02d}E{e_int:02d}", "tipo": "serie", "slug": slug})
+        _add(smap_series, titulo_base, {"id": f"tv_{s.get('id')}", "url": s.get("url") or "", "titulo": s.get("titulo"), "tipo": "serie", "slug": titulo_base})
+
+    for c in index.get("canais", []):
+        if not c.get("url"): continue
+        slug = slugify(c.get("titulo") or "")
+        _add(smap_canais, slug, {"id": f"live_{c.get('id')}", "url": c.get("url"), "titulo": c.get("titulo"), "tipo": "canal", "slug": slug})
+
+    _SLUG_MAP.clear(); _SLUG_MAP.update(smap_filmes); _SLUG_MAP.update(smap_series); _SLUG_MAP.update(smap_canais)
+    _ID_MAP.clear(); _ID_MAP.update(imap)
+    _SLUG_MAP_FILMES.clear(); _SLUG_MAP_FILMES.update(smap_filmes)
+    _SLUG_MAP_SERIES.clear(); _SLUG_MAP_SERIES.update(smap_series)
+    _SLUG_MAP_CANAIS.clear(); _SLUG_MAP_CANAIS.update(smap_canais)
+
+    def _salvar(path, dados):
+        try: path.write_text(json.dumps(dados, ensure_ascii=False), encoding="utf-8")
+        except Exception: pass
+
+    _salvar(SLUG_MAP_FILMES_FILE, smap_filmes); _salvar(SLUG_MAP_SERIES_FILE, smap_series); _salvar(SLUG_MAP_CANAIS_FILE, smap_canais)
+    return _SLUG_MAP
+
+def get_by_slug(slug: str) -> dict | None: return _SLUG_MAP.get(slug)
+def get_by_id(item_id: str) -> dict | None: return _ID_MAP.get(str(item_id))
+def total_slugs() -> int: return len(_SLUG_MAP)
+
+def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = None):
+    global _ID_MAP, _SLUG_MAP
+    if not item_id or not url: return
+    prefix = "movie" if tipo == "filme" else ("tv" if tipo == "serie" else "live")
+    id_reg = f"{prefix}_{item_id}"
+    dados = {"id": id_reg, "url": url, "titulo": titulo, "tipo": tipo, "slug": slug or slugify(titulo)}
+    _ID_MAP[id_reg] = dados
+    if slug: _SLUG_MAP[slug] = dados
+
+async def stream_proxy(url: str, request: Request) -> Response:
+    global _active_total
+    if not PROXY_ENABLED: raise HTTPException(404, "Proxy desativado.")
+    if not url or not url.strip(): raise HTTPException(404, "Item sem URL.")
+
+    if request.method == "OPTIONS":
+        return Response(status_code=200, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS", "Access-Control-Allow-Headers": "*", "Access-Control-Max-Age": "3600"})
+
+    client_ip = request.client.host if request.client else "unknown"
+    if _active_total >= PROXY_MAX_CONCURRENT: raise HTTPException(503, "Servidor no limite.")
+    if _active_by_ip.get(client_ip, 0) >= PROXY_MAX_PER_IP: raise HTTPException(429, "Limite por IP.")
+
     headers = {"User-Agent": USER_AGENT}
-    range_header = request.headers.get("range")
-    if range_header:
-        headers["Range"] = range_header
+    if "range" in request.headers: headers["Range"] = request.headers["range"]
+    if "if-modified-since" in request.headers: headers["If-Modified-Since"] = request.headers["if-modified-since"]
+    if "if-range" in request.headers: headers["If-Range"] = request.headers["if-range"]
+
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=PROXY_CONNECT_TIMEOUT, read=PROXY_READ_TIMEOUT, write=PROXY_READ_TIMEOUT, pool=None),
+        limits=httpx.Limits(max_connections=PROXY_MAX_CONCURRENT + 50, max_keepalive_connections=PROXY_MAX_CONCURRENT),
+        follow_redirects=True
+    )
 
     try:
-        req = _HTTP_CLIENT.build_request("GET", target_url, headers=headers)
-        r = await _HTTP_CLIENT.send(req, stream=True)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Erro ao conectar no servidor IPTV: {str(e)}")
+        req = client.build_request("GET", url, headers=headers)
+        upstream = await client.send(req, stream=True)
+    except httpx.RequestError as e:
+        await client.aclose()
+        raise HTTPException(502, f"Erro de rede: {e}")
 
-    resp_headers = {
-        "Content-Type": r.headers.get("content-type", "video/mp4"),
-        "Accept-Ranges": "bytes",
-        "Connection": "keep-alive",
-    }
-    if "content-range" in r.headers:
-        resp_headers["Content-Range"] = r.headers["content-range"]
-    if "content-length" in r.headers:
-        resp_headers["Content-Length"] = r.headers["content-length"]
+    if upstream.status_code >= 400:
+        status = upstream.status_code
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status, "Provedor recusou.")
 
-    async def stream_generator():
+    _active_total += 1
+    _active_by_ip[client_ip] = _active_by_ip.get(client_ip, 0) + 1
+
+    resp_headers = {}
+    for h in ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"):
+        if h in upstream.headers: resp_headers[h] = upstream.headers[h]
+    
+    resp_headers["Accept-Ranges"] = "bytes"
+    resp_headers["Cache-Control"] = "public, max-age=3600"
+    resp_headers["Access-Control-Allow-Origin"] = "*"
+    resp_headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+    resp_headers["Access-Control-Allow-Headers"] = "Range, Origin, Accept, Content-Type"
+    resp_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+    resp_headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+
+    media_type = upstream.headers.get("content-type", "video/mp4")
+
+    async def _streamer():
+        global _active_total
         try:
-            async for chunk in r.aiter_bytes(chunk_size=max(PROXY_CHUNK_SIZE, 1048576)):
-                if chunk:
-                    yield chunk
-        except (httpx.RequestError, httpx.TimeoutException, GeneratorExit):
-            pass
+            async for chunk in upstream.aiter_bytes(PROXY_CHUNK_SIZE):
+                yield chunk
+        except Exception: pass
         finally:
-            await r.aclose()
+            _active_total = max(0, _active_total - 1)
+            if client_ip in _active_by_ip:
+                _active_by_ip[client_ip] -= 1
+                if _active_by_ip[client_ip] <= 0: del _active_by_ip[client_ip]
+            try: await upstream.aclose()
+            except: pass
+            try: await client.aclose()
+            except: pass
 
-    return StreamingResponse(
-        stream_generator(),
-        status_code=r.status_code,
-        headers=resp_headers
-    )
+    return StreamingResponse(_streamer(), status_code=upstream.status_code, headers=resp_headers, media_type=media_type)
