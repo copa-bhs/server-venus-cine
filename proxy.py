@@ -15,6 +15,13 @@ def register_item(item_id: str, stream_url: str, title: str, tipo: str):
         "tipo": tipo
     }
 
+# 🚀 Cliente HTTP global otimizado com Pool de Conexões para reuso instantâneo (Evita o handshake lento a cada clique)
+_HTTP_CLIENT = httpx.AsyncClient(
+    timeout=httpx.Timeout(10.0, read=PROXY_READ_TIMEOUT),
+    follow_redirects=True,
+    limits=httpx.Limits(max_keepalive_connections=50, max_connections=200, keepalive_expiry=30.0)
+)
+
 @router.get("/stream/id/{slug}")
 async def proxy_stream(slug: str, request: Request):
     # Remove extensão .mp4 ou prefixos para extrair o ID limpo
@@ -26,51 +33,42 @@ async def proxy_stream(slug: str, request: Request):
     
     target_url = item["url"]
     
-    # Prepara os headers da requisição original (essencial para o Range de reprodução/seek)
+    # Prepara os headers repassando o Range para permitir seek rápido no player
     headers = {"User-Agent": USER_AGENT}
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
 
-    client = httpx.AsyncClient(timeout=httpx.Timeout(PROXY_CONNECT_TIMEOUT, read=PROXY_READ_TIMEOUT), follow_redirects=True)
+    try:
+        # Abre a requisição mantendo o fluxo contínuo
+        req = _HTTP_CLIENT.build_request("GET", target_url, headers=headers)
+        r = await _HTTP_CLIENT.send(req, stream=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao conectar no servidor IPTV: {str(e)}")
+
+    resp_headers = {
+        "Content-Type": r.headers.get("content-type", "video/mp4"),
+        "Accept-Ranges": "bytes",
+        "Connection": "keep-alive",
+    }
+    if "content-range" in r.headers:
+        resp_headers["Content-Range"] = r.headers["content-range"]
+    if "content-length" in r.headers:
+        resp_headers["Content-Length"] = r.headers["content-length"]
 
     async def stream_generator():
         try:
-            async with client:
-                async with client.stream("GET", target_url, headers=headers) as r:
-                    # Repassa o status code (200 OK ou 206 Partial Content)
-                    status_code = r.status_code
-                    
-                    async for chunk in r.aiter_bytes(chunk_size=PROXY_CHUNK_SIZE):
-                        if chunk:
-                            yield chunk
+            # 🚀 Chunk size ampliado (definido no config ou forçado para pacotes grandes de velocidade)
+            async for chunk in r.aiter_bytes(chunk_size=max(PROXY_CHUNK_SIZE, 1048576)): # Mínimo de 1MB por pacote
+                if chunk:
+                    yield chunk
         except (httpx.RequestError, httpx.TimeoutException, GeneratorExit):
-            pass # Trata desconexões do cliente ou oscilações do provedor sem quebrar o servidor
+            pass
         finally:
-            await client.aclose()
+            await r.aclose()
 
-    # Captura headers iniciais para espelhar a resposta do IPTV
-    try:
-        req_initial = client.build_request("GET", target_url, headers=headers)
-        r_init = await client.send(req_initial, stream=True)
-        
-        resp_headers = {
-            "Content-Type": r_init.headers.get("content-type", "video/mp4"),
-            "Accept-Ranges": "bytes",
-        }
-        if "content-range" in r_init.headers:
-            resp_headers["Content-Range"] = r_init.headers["content-range"]
-        if "content-length" in r_init.headers:
-            resp_headers["Content-Length"] = r_init.headers["content-length"]
-            
-        status = r_init.status_code
-        await r_init.aclose()
-        await client.aclose()
-        
-        return StreamingResponse(
-            stream_generator(),
-            status_code=status,
-            headers=resp_headers
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Erro de comunicação com o provedor IPTV: {str(e)}")
+    return StreamingResponse(
+        stream_generator(),
+        status_code=r.status_code,
+        headers=resp_headers
+    )

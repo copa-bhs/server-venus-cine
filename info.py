@@ -21,7 +21,6 @@ PASSWORD = IPTV_PASSWORD
 INFO_MOVIE_URL  = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_vod_info&vod_id={{id}}"
 INFO_SERIES_URL = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_series_info&series_id={{id}}"
 
-# ⚡ URLS COM PREFIXO NOVO
 def _url_proxy(item_id: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     if base:
@@ -227,30 +226,42 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
     eps_normalizados = []
     if isinstance(episodes_map, dict):
         for season_key, eps_list in episodes_map.items():
-            season_num = _to_int(season_key)
+            season_num = _to_int(season_key) or 1
             if not isinstance(eps_list, list): continue
             for ep in eps_list:
                 if not isinstance(ep, dict): continue
                 ep_info = ep.get("info") or {}
-                ep_id = _safe(ep, "id")
-                ep_num = _to_int(_safe(ep, "episode_num"))
+                
+                raw_ep_id = _safe(ep, "id")
+                ep_num = _to_int(_safe(ep, "episode_num")) or 1
+                
+                # 🧠 GERAÇÃO DE ID ÚNICO BLINDADO: Evita repetição e conflitos caso o IPTV mande IDs vazios ou repetidos
+                ep_id = str(raw_ep_id) if raw_ep_id and str(raw_ep_id) != "None" else f"{item_id}_s{season_num}e{ep_num}"
+                
                 titulo_bruto = _safe(ep_info, "name") or _safe(ep, "title") or ""
                 titulo_limpo = _clean_episode_title(titulo_bruto, titulo_serie)
-                if not titulo_limpo: titulo_limpo = f"Episódio {ep_num}" if ep_num else "Episódio"
+                if not titulo_limpo: titulo_limpo = f"Episódio {ep_num}"
 
                 url_xtream = _safe(ep, "stream_url")
-                if not url_xtream and ep_id:
+                if not url_xtream:
                     ext = _safe(ep, "container_extension", default="mp4")
-                    url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{ep_id}.{ext}"
+                    target_real_id = raw_ep_id if raw_ep_id and str(raw_ep_id) != "None" else item_id
+                    url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{target_real_id}.{ext}"
 
-                if ep_id:
-                    proxy.register_item(str(ep_id), url_xtream, titulo_limpo, "serie")
+                # Registra no proxy de forma totalmente isolada e única por episódio
+                proxy.register_item(str(ep_id), url_xtream, titulo_limpo, "serie")
 
                 eps_normalizados.append({
-                    "id": str(ep_id) if ep_id else None, "temporada": season_num, "episodio": ep_num,
-                    "titulo": titulo_limpo, "sinopse": _safe(ep_info, "plot"), "capa": _safe(ep_info, "movie_image"),
-                    "duracao": _safe(ep_info, "duration"), "score": _safe(ep_info, "rating"),
-                    "url_stream": _url_proxy_episodio(str(ep_id)) if ep_id else None, "url_stream_direto": url_xtream,
+                    "id": str(ep_id), 
+                    "temporada": season_num, 
+                    "episodio": ep_num,
+                    "titulo": titulo_limpo, 
+                    "sinopse": _safe(ep_info, "plot"), 
+                    "capa": _safe(ep_info, "movie_image"),
+                    "duracao": _safe(ep_info, "duration"), 
+                    "score": _safe(ep_info, "rating"),
+                    "url_stream": _url_proxy_episodio(str(ep_id)), 
+                    "url_stream_direto": url_xtream,
                 })
 
     eps_normalizados.sort(key=lambda e: (e["temporada"] or 0, e["episodio"] or 0))
