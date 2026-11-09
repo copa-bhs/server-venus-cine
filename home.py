@@ -30,7 +30,6 @@ def _parse_genres(genres_raw):
         return []
 
 def _serializar_leve(item, badge_especial=None):
-    """Serializa o item e injeta dinamicamente o selo inteligente gerado pelo backend."""
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
     return {
         "iptv_id": str(getattr(item, "iptv_id", None) or item.id),
@@ -43,7 +42,7 @@ def _serializar_leve(item, badge_especial=None):
         "age_rating": getattr(item, "age_rating", None),
         "genres": _parse_genres(getattr(item, "genres", None)),
         "type": tipo_final,
-        "badge": badge_especial # 🧠 O cérebro envia a tag pronta para o front-end exibir
+        "badge": badge_especial
     }
 
 def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -> list:
@@ -121,7 +120,6 @@ async def _fetch_trending_tmdb(tipo: str) -> list:
     return []
 
 async def _fetch_on_the_air_tmdb() -> list:
-    """Busca séries que estão ativas com episódios recentes no TMDb (The TV Movie Database)"""
     if not TMDB_ENABLED:
         return []
     try:
@@ -163,7 +161,6 @@ def _get_top10_misto(db: Session, Tabela, trending_ids: list):
     return itens[:10]
 
 def _get_novos_episodios(db: Session, on_the_air_ids: list):
-    """Identifica com inteligência do TMDb quais séries ganharam novos episódios ou temporadas"""
     itens = []
     vistos_ids = set()
 
@@ -217,25 +214,20 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
             "items": serialized_items
         })
 
-    # 1. EM ALTA
     em_alta_f = _get_top10_misto(db, FilmeDB, trending_filmes)
     em_alta_s = _get_top10_misto(db, SerieDB, trending_series)
     em_alta_mix = sorted(em_alta_f + em_alta_s, key=lambda x: (x.rating_avg or 0), reverse=True)[:15]
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_mix, "misto", "fire")
 
-    # 2. TOP 10 FILMES
     top_f = _get_top10_misto(db, FilmeDB, trending_filmes)
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star")
 
-    # 3. TOP 10 SÉRIES
     top_s = _get_top10_misto(db, SerieDB, trending_series)
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    # 4. NOVOS EPISÓDIOS (🧠 Cérebro define o selo inteligente aqui)
     novos_eps = _get_novos_episodios(db, on_the_air)
     add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv", badge_custom="NOVOS EPISÓDIOS")
 
-    # 5. RECENTES
     recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
     recentes_s = db.query(SerieDB).filter(SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
     if not recentes_f and not recentes_s:
@@ -244,18 +236,15 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
     add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
 
-    # 6. TENDÊNCIAS
     ano_limite = datetime.now().year - 1
     tend_f = db.query(FilmeDB).filter(FilmeDB.year >= ano_limite).order_by(desc(FilmeDB.year)).limit(15).all()
     tend_s = db.query(SerieDB).filter(SerieDB.year >= ano_limite).order_by(desc(SerieDB.year)).limit(15).all()
     add("tendencias", "📈 Tendências da Semana", sorted(tend_f + tend_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
-    # 7. RECOMENDAÇÕES
     rec_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
     rec_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(20).all()
     add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "sparkles")
 
-    # 8. STREAMINGS
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
