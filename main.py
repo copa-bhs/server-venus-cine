@@ -68,11 +68,9 @@ def _serializar_detalhes(item):
         "url_stream": url_proxy, "url_stream_direto": item.url
     }
 
-# ⚡ FUNÇÃO COM TIMEOUT DE 8 SEGUNDOS
 async def _get_serie_completa(s: SerieDB):
     base_data = _serializar_detalhes(s)
     try:
-        # Se o IPTV demorar mais de 8 segundos, ele cancela e devolve o base_data
         info_iptv = await asyncio.wait_for(fetch_series_info(str(s.iptv_id)), timeout=8.0)
         if info_iptv:
             info_iptv["title"] = base_data["title"]; info_iptv["description"] = base_data["description"]
@@ -103,43 +101,57 @@ async def home(force: bool = False, response: Response = None):
     db = SessionLocal()
     try:
         if response: response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        return await home_module.build_home_async(db, force=force)
-    finally: db.close()
+        dados = await home_module.build_home_async(db, force=force)
+        print(f"[Home] Retornando {len(dados.get('colecoes', []))} colecoes.")
+        return dados
+    except Exception as e:
+        print(f"[Home] ERRO CRITICO: {e}")
+        raise HTTPException(500, str(e))
+    finally: 
+        db.close()
 
 @app.get("/categorias")
 def categorias(db: Session = Depends(get_db)):
-    f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
-    s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
-    todas = set(f_cats + s_cats)
-    ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
-    result = []
-    for cat in todas:
-        if not cat: continue
-        cat_upper = cat.upper()
-        if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): continue
-        result.append(cat)
-    result.sort()
-    return {"filmes": result, "series": result, "todos": result}
+    try:
+        f_cats = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
+        s_cats = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
+        todas = set(f_cats + s_cats)
+        ignorar = ["GERAL", "FILMES", "SÉRIES", "FILME", "SÉRIE", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
+        result = []
+        for cat in todas:
+            if not cat: continue
+            cat_upper = cat.upper()
+            if cat_upper in ignorar or (cat.isdigit() and len(cat) == 4): continue
+            result.append(cat)
+        result.sort()
+        return {"filmes": result, "series": result, "todos": result}
+    except Exception as e:
+        print(f"[Categorias] Erro: {e}")
+        return {"filmes": [], "series": [], "todos": []}
 
 @app.get("/buscar")
 def buscar(q: str, tipo: str | None = None, page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
-    q_norm = f"%{q}%"
-    resultados = []
-    if tipo in (None, "filme", "movie"):
-        for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(100).all(): resultados.append(f)
-    if tipo in (None, "serie", "series"):
-        for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(100).all(): resultados.append(s)
+    try:
+        q_norm = f"%{q}%"
+        resultados = []
+        if tipo in (None, "filme", "movie"):
+            for f in db.query(FilmeDB).filter(FilmeDB.title.ilike(q_norm)).limit(100).all(): resultados.append(f)
+        if tipo in (None, "serie", "series"):
+            for s in db.query(SerieDB).filter(SerieDB.title.ilike(q_norm)).limit(100).all(): resultados.append(s)
 
-    total = len(resultados)
-    start = (page - 1) * size
-    end = start + size
-    paged = resultados[start:end]
-    
-    return {
-        "page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1) // size,
-        "has_next": end < total, "has_prev": page > 1,
-        "items": [_serializar_detalhes(it) for it in paged]
-    }
+        total = len(resultados)
+        start = (page - 1) * size
+        end = start + size
+        paged = resultados[start:end]
+        
+        return {
+            "page": page, "page_size": size, "total_items": total, "total_pages": (total + size - 1) // size,
+            "has_next": end < total, "has_prev": page > 1,
+            "items": [_serializar_detalhes(it) for it in paged]
+        }
+    except Exception as e:
+        print(f"[Buscar] Erro: {e}")
+        return {"page": 1, "page_size": size, "total_items": 0, "total_pages": 0, "has_next": False, "has_prev": False, "items": []}
 
 async def _task_importar():
     try:
@@ -315,13 +327,17 @@ async def editar_serie(item_id: str, background_tasks: BackgroundTasks, titulo: 
 
 @app.get("/filmes")
 def listar_filmes(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
-    q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
+    try:
+        q = db.query(FilmeDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
+        return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
+    except: return {"page": 1, "items": []}
 
 @app.get("/series")
 def listar_series(page: int = Query(1), size: int = Query(30), db: Session = Depends(get_db)):
-    q = db.query(SerieDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
-    return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
+    try:
+        q = db.query(SerieDB); total = q.count(); items = q.offset((page - 1) * size).limit(size).all()
+        return {"page": page, "total_items": total, "items": [_serializar_detalhes(it) for it in items]}
+    except: return {"page": 1, "items": []}
 
 @app.get("/admin/filmes")
 def admin_filmes(q: str | None = None, page: int = 1, size: int = 30, db: Session = Depends(get_db)):
