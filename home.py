@@ -31,12 +31,18 @@ def _parse_genres(genres_raw):
 
 def _serializar_leve(item, badge_especial=None):
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
+    
+    # Mapeamento seguro da sinopse (tratando fallback entre description e sinopse)
+    sinopse_texto = getattr(item, "description", None) or getattr(item, "sinopse", None) or ""
+
     return {
         "iptv_id": str(getattr(item, "iptv_id", None) or item.id),
         "title": getattr(item, "title", "") or "Sem título",
         "poster": getattr(item, "poster", None),
         "backdrop": getattr(item, "backdrop", None),
         "logo": getattr(item, "logo", None),
+        "overview": sinopse_texto,
+        "sinopse": sinopse_texto,
         "year": getattr(item, "year", None),
         "rating_avg": float(getattr(item, "rating_avg", 0.0) or 0.0),
         "age_rating": getattr(item, "age_rating", None),
@@ -59,6 +65,8 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
             continue
         vistos_ids.add(item_id)
 
+        sinopse_ref = s.sinopse or getattr(ref, "description", None) or getattr(ref, "sinopse", None) or ""
+
         hero.append({
             "id": item_id,
             "tipo": "filme" if s.ref_tipo == "filme" else "serie",
@@ -66,7 +74,8 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
             "banner": s.banner or ref.backdrop or ref.poster,
             "capa": ref.poster,
             "logo": s.logo or ref.logo,
-            "sinopse": s.sinopse or getattr(ref, "description", "") or "",
+            "sinopse": sinopse_ref,
+            "overview": sinopse_ref,
             "score": float(ref.rating_avg or 0.0),
             "classificacao": ref.age_rating,
             "ano": ref.year,
@@ -88,6 +97,8 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
             vistos_ids.add(item_id)
 
             tipo_ref = "filme" if isinstance(ref, FilmeDB) else "serie"
+            sinopse_ref = getattr(ref, "description", None) or getattr(ref, "sinopse", None) or ""
+
             hero.append({
                 "id": item_id,
                 "tipo": tipo_ref,
@@ -95,7 +106,8 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
                 "banner": getattr(ref, "backdrop", None) or getattr(ref, "poster", None),
                 "capa": getattr(ref, "poster", None),
                 "logo": getattr(ref, "logo", None),
-                "sinopse": getattr(ref, "description", "") or "",
+                "sinopse": sinopse_ref,
+                "overview": sinopse_ref,
                 "score": float(getattr(ref, "rating_avg", 0.0) or 0.0),
                 "classificacao": getattr(ref, "age_rating", None),
                 "ano": getattr(ref, "year", None),
