@@ -30,7 +30,7 @@ def _parse_genres(genres_raw):
         return []
 
 def _is_conteudo_proibido(item) -> bool:
-    """Bloqueia documentários, músicas, filmes nacionais e filmes clássicos/antigos (antes do ano 2000)."""
+    """Bloqueia documentários, músicas, filmes nacionais e filmes clássicos/antigos (antes de 2000)."""
     genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     pais = str(getattr(item, "country", "")).lower()
     coletany = str(getattr(item, "coletany", "")).strip()
@@ -48,42 +48,35 @@ def _is_conteudo_proibido(item) -> bool:
     return False
 
 def _is_anime(item) -> bool:
-    """Identifica animes com base nos metadanos e gêneros."""
     genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     coletany = str(getattr(item, "coletany", "")).strip()
-    titulo = str(getattr(item, "title", "")).lower()
     return "anime" in genres or "anime" in coletany.lower() or "animação japonesa" in coletany.lower()
 
 def _is_dorama_categoria(coletany: str) -> bool:
-    """
-    Valida se a categoria/coletânea segue o padrão da API (começa com maiúscula e termina com minúscula)
-    e pertence estritamente ao universo de Doramas (Ex: 'Doramas', 'Dorama coreano', etc).
-    """
     if not coletany:
         return False
-    
-    # Verifica a regra de formatação exigida
     if not (coletany[0].isupper() and coletany[-1].islower()):
         return False
-
     c_lower = coletany.lower()
-    termos_validos = ["dorama", "doramas", "kdrama", "j-drama", "c-drama", "coreana", "coreano"]
-    return any(termo in c_lower for termo in termos_validos)
+    termos = ["dorama", "doramas", "kdrama", "j-drama", "c-drama", "coreana", "coreano"]
+    return any(t in c_lower for t in termos)
 
 def _is_anime_categoria(coletany: str) -> bool:
-    """Valida categoria de animes respeitando a regra de maiúscula/minúscula."""
     if not coletany:
         return False
     if not (coletany[0].isupper() and coletany[-1].islower()):
         return False
     return "anime" in coletany.lower() or "animes" in coletany.lower()
 
-def _is_desenho(item) -> bool:
-    genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
-    coletany = str(getattr(item, "coletany", "")).strip()
-    if _is_anime(item):
+def _is_desenho_categoria(coletany: str) -> bool:
+    """Valida categoria de desenhos/animações ocidentais seguindo a regra Maiúscula -> minúscula."""
+    if not coletany:
         return False
-    return "animação" in genres or "animation" in genres or "desenho" in coletany.lower()
+    if not (coletany[0].isupper() and coletany[-1].islower()):
+        return False
+    c_lower = coletany.lower()
+    termos = ["desenho", "desenhos", "animação", "animacao", "infantil", "cartoon"]
+    return any(t in c_lower for t in termos)
 
 def _serializar_leve(item, badge_especial=None):
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
@@ -154,7 +147,7 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
     itens = []
     vistos_ids = set()
 
-    # Busca restrita por categoria formatada (Maiúscula -> minúscula) para Doramas
+    # 1. Puxa Doramas estritamente pela regra de categoria
     if tipo_filtro == "dorama":
         db_itens = db.query(Tabela).all()
         for item in db_itens:
@@ -167,7 +160,7 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
                 return itens
         return itens
 
-    # Busca restrita por categoria formatada (Maiúscula -> minúscula) para Animes
+    # 2. Puxa Animes estritamente pela regra de categoria ou metadados
     if tipo_filtro == "anime":
         db_itens = db.query(Tabela).all()
         for item in db_itens:
@@ -180,6 +173,20 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
                 return itens
         return itens
 
+    # 3. Puxa Desenhos Animados estritamente pela categoria formatada
+    if tipo_filtro == "desenho":
+        db_itens = db.query(Tabela).all()
+        for item in db_itens:
+            coletany = str(getattr(item, "coletany", "")).strip()
+            if _is_desenho_categoria(coletany) and item.id not in vistos_ids:
+                if not _is_conteudo_proibido(item):
+                    vistos_ids.add(item.id)
+                    itens.append(item)
+            if len(itens) >= limit:
+                return itens
+        return itens
+
+    # 4. Fluxo normal para as demais prateleiras (bloqueando animes, desenhos e doramas)
     if tmdb_ids:
         db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(tmdb_ids)).all()
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
@@ -188,11 +195,8 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
             if item and item.id not in vistos_ids:
                 if _is_conteudo_proibido(item):
                     continue
-                if _is_anime(item):
-                    continue  # Corta animes das prateleiras gerais
-                if tipo_filtro == "top10" and (_is_anime(item) or _is_desenho(item)):
-                    continue
-                if tipo_filtro == "geral" and (_is_anime(item) or _is_desenho(item)):
+                coletany = str(getattr(item, "coletany", "")).strip()
+                if _is_anime(item) or _is_anime_categoria(coletany) or _is_dorama_categoria(coletany) or _is_desenho_categoria(coletany):
                     continue
                 
                 vistos_ids.add(item.id)
@@ -207,11 +211,8 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
             if ext.id not in vistos_ids:
                 if _is_conteudo_proibido(ext):
                     continue
-                if _is_anime(ext):
-                    continue
-                if tipo_filtro == "top10" and (_is_anime(ext) or _is_desenho(ext)):
-                    continue
-                if tipo_filtro == "geral" and (_is_anime(ext) or _is_desenho(ext)):
+                coletany = str(getattr(ext, "coletany", "")).strip()
+                if _is_anime(ext) or _is_anime_categoria(coletany) or _is_dorama_categoria(coletany) or _is_desenho_categoria(coletany):
                     continue
 
                 vistos_ids.add(ext.id)
@@ -255,11 +256,11 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
     em_alta_mix = sorted(em_alta_f + em_alta_s, key=lambda x: (x.rating_avg or 0), reverse=True)[:15]
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_mix, "misto", "fire")
 
-    # 2. 🏆 Top 10 Filmes (Limpo de antigos, animes, desenhos e docs)
+    # 2. 🏆 Top 10 Filmes
     top_f = _get_items_filtrados(db, FilmeDB, t_week_f, 10, "top10")
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star")
 
-    # 3. 🏆 Top 10 Séries (Limpo de antigos, animes, desenhos e docs)
+    # 3. 🏆 Top 10 Séries
     top_s = _get_items_filtrados(db, SerieDB, t_week_s, 10, "top10")
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
@@ -273,19 +274,19 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
     tend_semana_s = _get_items_filtrados(db, SerieDB, t_week_s, 12, "geral")
     add("tendencias_semana", "📈 Tendências da Semana", sorted(tend_semana_f + tend_semana_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
-    # 6. 🌸 Doramas (Puxando rigorosamente da categoria com regra Maiúscula -> minúscula)
+    # 6. 🌸 Doramas
     doramas_f = _get_items_filtrados(db, FilmeDB, [], 15, "dorama")
     doramas_s = _get_items_filtrados(db, SerieDB, [], 15, "dorama")
     add("doramas", "🌸 Doramas e Séries Asiáticas", doramas_f + doramas_s, "misto", "heart")
 
-    # 7. ⚡ Animes (Puxando rigorosamente da categoria com regra Maiúscula -> minúscula)
+    # 7. ⚡ Animes
     animes_f = _get_items_filtrados(db, FilmeDB, [], 15, "anime")
     animes_s = _get_items_filtrados(db, SerieDB, [], 15, "anime")
     add("animes", "⚡ Animes", animes_f + animes_s, "misto", "zap")
 
-    # 8. 🎨 Desenhos e Animações Ocidentais
-    desenhos_f = _get_items_filtrados(db, FilmeDB, t_week_f, 15, "desenho")
-    desenhos_s = _get_items_filtrados(db, SerieDB, t_week_s, 15, "desenho")
+    # 8. 🎨 Desenhos Animados (Puxando rigorosamente da categoria com regra Maiúscula -> minúscula)
+    desenhos_f = _get_items_filtrados(db, FilmeDB, [], 15, "desenho")
+    desenhos_s = _get_items_filtrados(db, SerieDB, [], 15, "desenho")
     add("desenhos", "🎨 Desenhos Animados", desenhos_f + desenhos_s, "misto", "smile")
 
     # 9. 📺 Últimas Séries Atualizadas
