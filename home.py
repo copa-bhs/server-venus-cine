@@ -32,7 +32,7 @@ def _parse_genres(genres_raw):
 def _serializar_leve(item, badge_especial=None):
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
     
-    # Mapeamento seguro da sinopse (tratando fallback entre description e sinopse)
+    # Mapeamento seguro da sinopse e overview garantindo entrega completa
     sinopse_texto = getattr(item, "description", None) or getattr(item, "sinopse", None) or ""
 
     return {
@@ -116,91 +116,48 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
 
     return hero
 
-async def _fetch_trending_tmdb(tipo: str) -> list:
+async def _fetch_tmdb_list(endpoint: str, params: dict) -> list:
     if not TMDB_ENABLED:
         return []
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(
-                f"https://api.themoviedb.org/3/trending/{tipo}/day",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE}
-            )
+            r = await client.get(endpoint, params=params)
             if r.status_code == 200:
                 return [item['id'] for item in r.json().get('results', [])][:25]
     except Exception:
         pass
     return []
 
-async def _fetch_on_the_air_tmdb() -> list:
-    if not TMDB_ENABLED:
-        return []
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(
-                "https://api.themoviedb.org/3/tv/on_the_air",
-                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE}
-            )
-            if r.status_code == 200:
-                return [item['id'] for item in r.json().get('results', [])][:25]
-    except Exception:
-        pass
-    return []
-
-def _get_top10_misto(db: Session, Tabela, trending_ids: list):
+def _get_items_by_tmdb_or_rating(db: Session, Tabela, tmdb_ids: list, limit=15):
     itens = []
     vistos_ids = set()
 
-    if trending_ids:
-        db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(trending_ids)).all()
+    if tmdb_ids:
+        db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(tmdb_ids)).all()
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
-        for t_id in trending_ids:
+        for t_id in tmdb_ids:
             item = map_db.get(str(t_id))
             if item and item.id not in vistos_ids:
                 vistos_ids.add(item.id)
                 itens.append(item)
-            if len(itens) >= 10:
+            if len(itens) >= limit:
                 break
 
-    if len(itens) < 10:
+    # Fallback automático: se faltar conteúdo do TMDB no banco, avalia por nota maior
+    if len(itens) < limit:
         extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(50).all()
         for ext in extras:
             if ext.id not in vistos_ids:
                 vistos_ids.add(ext.id)
                 itens.append(ext)
-                if len(itens) >= 10:
+                if len(itens) >= limit:
                     break
 
-    return itens[:10]
+    return itens[:limit]
 
-def _get_novos_episodios(db: Session, on_the_air_ids: list):
-    itens = []
-    vistos_ids = set()
-
-    if on_the_air_ids:
-        db_itens = db.query(SerieDB).filter(SerieDB.tmdb_id.in_(on_the_air_ids)).all()
-        map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
-        for t_id in on_the_air_ids:
-            item = map_db.get(str(t_id))
-            if item and item.id not in vistos_ids:
-                vistos_ids.add(item.id)
-                itens.append(item)
-            if len(itens) >= 15:
-                break
-
-    if len(itens) < 15:
-        extras = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(50).all()
-        for ext in extras:
-            if ext.id not in vistos_ids:
-                vistos_ids.add(ext.id)
-                itens.append(ext)
-                if len(itens) >= 15:
-                    break
-
-    return itens[:15]
-
-def _construir_colecoes(db: Session, trending_filmes: list, trending_series: list, on_the_air: list) -> list:
+def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: list, t_week_s: list, on_the_air: list) -> list:
     colecoes = []
-    MAX_COLECOES = 12
+    MAX_COLECOES = 15
 
     def add(id_, titulo, items, tipo_padrao="misto", icon="folder", min_itens=1, badge_custom=None):
         if len(colecoes) >= MAX_COLECOES:
@@ -226,37 +183,48 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
             "items": serialized_items
         })
 
-    em_alta_f = _get_top10_misto(db, FilmeDB, trending_filmes)
-    em_alta_s = _get_top10_misto(db, SerieDB, trending_series)
+    # 1. 🔥 Em Alta (Misto)
+    em_alta_f = _get_items_by_tmdb_or_rating(db, FilmeDB, t_week_f, 10)
+    em_alta_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_week_s, 10)
     em_alta_mix = sorted(em_alta_f + em_alta_s, key=lambda x: (x.rating_avg or 0), reverse=True)[:15]
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_mix, "misto", "fire")
 
-    top_f = _get_top10_misto(db, FilmeDB, trending_filmes)
+    # 2. 🏆 Top 10 Filmes
+    top_f = _get_items_by_tmdb_or_rating(db, FilmeDB, t_week_f, 10)
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star")
 
-    top_s = _get_top10_misto(db, SerieDB, trending_series)
+    # 3. 🏆 Top 10 Séries
+    top_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_week_s, 10)
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
-    novos_eps = _get_novos_episodios(db, on_the_air)
+    # 4. 📈 Tendências de Hoje
+    tend_hoje_f = _get_items_by_tmdb_or_rating(db, FilmeDB, t_day_f, 12)
+    tend_hoje_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_day_s, 12)
+    add("tendencias_hoje", "📈 Tendências de Hoje", sorted(tend_hoje_f + tend_hoje_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "trending-up")
+
+    # 5. 📈 Tendências da Semana
+    tend_semana_f = _get_items_by_tmdb_or_rating(db, FilmeDB, t_week_f, 12)
+    tend_semana_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_week_s, 12)
+    add("tendencias_semana", "📈 Tendências da Semana", sorted(tend_semana_f + tend_semana_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "trending-up")
+
+    # 6. 📺 Últimas Séries Atualizadas (On The Air)
+    novos_eps = _get_items_by_tmdb_or_rating(db, SerieDB, on_the_air, 15)
     add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv", badge_custom="NOVOS EPISÓDIOS")
 
-    recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(30).all()
-    recentes_s = db.query(SerieDB).filter(SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(30).all()
+    # 7. 🚀 Adicionados Recentemente
+    recentes_f = db.query(FilmeDB).filter(FilmeDB.created_at.isnot(None)).order_by(desc(FilmeDB.created_at)).limit(20).all()
+    recentes_s = db.query(SerieDB).filter(SerieDB.created_at.isnot(None)).order_by(desc(SerieDB.created_at)).limit(20).all()
     if not recentes_f and not recentes_s:
-        recentes_f = db.query(FilmeDB).order_by(desc(FilmeDB.id)).limit(30).all()
-        recentes_s = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(30).all()
-    recentes_mix = sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True)
-    add("recentes", "🚀 Adicionados Recentemente", recentes_mix, "misto", "clock")
+        recentes_f = db.query(FilmeDB).order_by(desc(FilmeDB.id)).limit(20).all()
+        recentes_s = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(20).all()
+    add("recentes", "🚀 Adicionados Recentemente", sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "clock")
 
-    ano_limite = datetime.now().year - 1
-    tend_f = db.query(FilmeDB).filter(FilmeDB.year >= ano_limite).order_by(desc(FilmeDB.year)).limit(15).all()
-    tend_s = db.query(SerieDB).filter(SerieDB.year >= ano_limite).order_by(desc(SerieDB.year)).limit(15).all()
-    add("tendencias", "📈 Tendências da Semana", sorted(tend_f + tend_s, key=lambda x: (x.year or 0, x.rating_avg or 0), reverse=True), "misto", "trending-up")
+    # 8. ⭐ Mais Populares / Melhores Avaliados (com fallback por nota)
+    pop_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(15).all()
+    pop_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(15).all()
+    add("mais_populares", "⭐ Mais Populares e Bem Avaliados", sorted(pop_f + pop_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "award")
 
-    rec_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
-    rec_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(20).all()
-    add("recomendacoes", "✨ Escolhidos a Dedo para Você", sorted(rec_f + rec_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "sparkles")
-
+    # 9. 📺 Coleções por Streaming e Categorias
     ignorar = ["GERAL", "FILMES", "SÉRIES", "4K", "FHD", "HD", "SD", "LANÇAMENTOS", "NACIONAL", "2020", "2021", "2022", "2023", "2024", "2025", "2026", "DUBLADO", "LEGENDADO", "DOCUMENTÁRIOS", "ANIMES"]
     cats_f = [r[0] for r in db.query(FilmeDB.coletany).distinct().all() if r[0]]
     cats_s = [r[0] for r in db.query(SerieDB.coletany).distinct().all() if r[0]]
@@ -272,8 +240,8 @@ def _construir_colecoes(db: Session, trending_filmes: list, trending_series: lis
     for cat in cats_ordenadas:
         if len(colecoes) >= MAX_COLECOES: break
         if not cat or cat.upper() in ignorar or (cat.isdigit() and len(cat) == 4): continue
-        items_f = db.query(FilmeDB).filter(FilmeDB.coletany == cat).order_by(desc(FilmeDB.rating_avg)).limit(20).all()
-        items_s = db.query(SerieDB).filter(SerieDB.coletany == cat).order_by(desc(SerieDB.rating_avg)).limit(20).all()
+        items_f = db.query(FilmeDB).filter(FilmeDB.coletany == cat).order_by(desc(FilmeDB.rating_avg)).limit(15).all()
+        items_s = db.query(SerieDB).filter(SerieDB.coletany == cat).order_by(desc(SerieDB.rating_avg)).limit(15).all()
         add(f"streaming_{cat}", f"📺 Coleção {cat}", items_f + items_s, "misto", "folder")
 
     return colecoes
@@ -283,15 +251,19 @@ async def build_home_async(db: Session, force: bool = False) -> dict:
     if not force and _HOME_CACHE and (time.time() - _HOME_CACHE_TS) < CACHE_TTL:
         return _HOME_CACHE
 
-    trending_f, trending_s, on_the_air = await asyncio.gather(
-        _fetch_trending_tmdb("movie"), 
-        _fetch_trending_tmdb("tv"),
-        _fetch_on_the_air_tmdb()
+    params = {"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE}
+
+    t_day_f, t_day_s, t_week_f, t_week_s, on_the_air = await asyncio.gather(
+        _fetch_tmdb_list("https://api.themoviedb.org/3/trending/movie/day", params),
+        _fetch_tmdb_list("https://api.themoviedb.org/3/trending/tv/day", params),
+        _fetch_tmdb_list("https://api.themoviedb.org/3/trending/movie/week", params),
+        _fetch_tmdb_list("https://api.themoviedb.org/3/trending/tv/week", params),
+        _fetch_tmdb_list("https://api.themoviedb.org/3/tv/on_the_air", params)
     )
 
     def _montar_tudo():
-        hero = _construir_hero(db, trending_f, trending_s)
-        colecoes = _construir_colecoes(db, trending_f, trending_s, on_the_air)
+        hero = _construir_hero(db, t_week_f, t_week_s)
+        colecoes = _construir_colecoes(db, t_day_f, t_day_s, t_week_f, t_week_s, on_the_air)
         return hero, colecoes
 
     hero, colecoes = await asyncio.to_thread(_montar_tudo)
