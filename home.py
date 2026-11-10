@@ -31,8 +31,6 @@ def _parse_genres(genres_raw):
 
 def _serializar_leve(item, badge_especial=None):
     tipo_final = "movie" if getattr(item, "stream_type", "movie") == "movie" else "series"
-    
-    # Mapeamento seguro da sinopse e overview garantindo entrega completa
     sinopse_texto = getattr(item, "description", None) or getattr(item, "sinopse", None) or ""
 
     return {
@@ -84,8 +82,8 @@ def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -
 
     TARGET_HERO_COUNT = 7
     if len(hero) < TARGET_HERO_COUNT:
-        extras_f = _get_top10_misto(db, FilmeDB, trending_filmes)
-        extras_s = _get_top10_misto(db, SerieDB, trending_series)
+        extras_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
+        extras_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(10).all()
         extras_mix = sorted(extras_f + extras_s, key=lambda x: (x.rating_avg or 0), reverse=True)
 
         for ref in extras_mix:
@@ -120,7 +118,7 @@ async def _fetch_tmdb_list(endpoint: str, params: dict) -> list:
     if not TMDB_ENABLED:
         return []
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=4) as client:
             r = await client.get(endpoint, params=params)
             if r.status_code == 200:
                 return [item['id'] for item in r.json().get('results', [])][:25]
@@ -132,6 +130,7 @@ def _get_items_by_tmdb_or_rating(db: Session, Tabela, tmdb_ids: list, limit=15):
     itens = []
     vistos_ids = set()
 
+    # Tenta buscar pelo TMDB primeiro se houver IDs válidos
     if tmdb_ids:
         db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(tmdb_ids)).all()
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
@@ -143,7 +142,7 @@ def _get_items_by_tmdb_or_rating(db: Session, Tabela, tmdb_ids: list, limit=15):
             if len(itens) >= limit:
                 break
 
-    # Fallback automático: se faltar conteúdo do TMDB no banco, avalia por nota maior
+    # Se faltar itens (ou o TMDB falhar/vier vazio), preenche robustamente com os melhores avaliados do banco local
     if len(itens) < limit:
         extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(50).all()
         for ext in extras:
@@ -183,7 +182,7 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
             "items": serialized_items
         })
 
-    # 1. 🔥 Em Alta (Misto)
+    # 1. 🔥 Em Alta
     em_alta_f = _get_items_by_tmdb_or_rating(db, FilmeDB, t_week_f, 10)
     em_alta_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_week_s, 10)
     em_alta_mix = sorted(em_alta_f + em_alta_s, key=lambda x: (x.rating_avg or 0), reverse=True)[:15]
@@ -207,7 +206,7 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
     tend_semana_s = _get_items_by_tmdb_or_rating(db, SerieDB, t_week_s, 12)
     add("tendencias_semana", "📈 Tendências da Semana", sorted(tend_semana_f + tend_semana_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
-    # 6. 📺 Últimas Séries Atualizadas (On The Air)
+    # 6. 📺 Últimas Séries Atualizadas
     novos_eps = _get_items_by_tmdb_or_rating(db, SerieDB, on_the_air, 15)
     add("novos_episodios", "📺 Últimas Séries Atualizadas", novos_eps, "serie", "tv", badge_custom="NOVOS EPISÓDIOS")
 
@@ -219,7 +218,7 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
         recentes_s = db.query(SerieDB).order_by(desc(SerieDB.id)).limit(20).all()
     add("recentes", "🚀 Adicionados Recentemente", sorted(recentes_f + recentes_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "clock")
 
-    # 8. ⭐ Mais Populares / Melhores Avaliados (com fallback por nota)
+    # 8. ⭐ Mais Populares e Bem Avaliados
     pop_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(15).all()
     pop_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(15).all()
     add("mais_populares", "⭐ Mais Populares e Bem Avaliados", sorted(pop_f + pop_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "award")
