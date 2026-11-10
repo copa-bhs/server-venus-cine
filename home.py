@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from db import Filme as FilmeDB, Serie as SerieDB, Slide as SlideDB
+from db import Filme as FilmeDB, Serie as SerieDB
 from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, PUBLIC_BASE_URL
 
 _HOME_CACHE = {}
@@ -50,67 +50,44 @@ def _serializar_leve(item, badge_especial=None):
     }
 
 def _construir_hero(db: Session, trending_filmes: list, trending_series: list) -> list:
-    slides = db.query(SlideDB).filter(SlideDB.ativo == True).order_by(SlideDB.ordem).all()
+    """
+    Constrói o Hero (Carrossel do Topo) exclusivamente com conteúdos em alta / nota alta,
+    ignorando completamente os slides manuais do painel.
+    """
     hero = []
     vistos_ids = set()
 
-    for s in slides:
-        ref = db.query(FilmeDB).get(s.ref_id) if s.ref_tipo == "filme" else db.query(SerieDB).get(s.ref_id)
-        if not ref:
-            continue
+    # Busca os melhores conteúdos do banco para montar um Hero dinâmico e atraente
+    extras_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
+    extras_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(10).all()
+    extras_mix = sorted(extras_f + extras_s, key=lambda x: (x.rating_avg or 0), reverse=True)
+
+    TARGET_HERO_COUNT = 7
+    for ref in extras_mix:
+        if len(hero) >= TARGET_HERO_COUNT:
+            break
         item_id = str(getattr(ref, "iptv_id", None) or ref.id)
         if item_id in vistos_ids:
             continue
         vistos_ids.add(item_id)
 
-        sinopse_ref = s.sinopse or getattr(ref, "description", None) or getattr(ref, "sinopse", None) or ""
+        tipo_ref = "filme" if isinstance(ref, FilmeDB) else "serie"
+        sinopse_ref = getattr(ref, "description", None) or getattr(ref, "sinopse", None) or ""
 
         hero.append({
             "id": item_id,
-            "tipo": "filme" if s.ref_tipo == "filme" else "serie",
-            "titulo": s.titulo or ref.title,
-            "banner": s.banner or ref.backdrop or ref.poster,
-            "capa": ref.poster,
-            "logo": s.logo or ref.logo,
+            "tipo": tipo_ref,
+            "titulo": getattr(ref, "title", "Sem Título"),
+            "banner": getattr(ref, "backdrop", None) or getattr(ref, "poster", None),
+            "capa": getattr(ref, "poster", None),
+            "logo": getattr(ref, "logo", None),
             "sinopse": sinopse_ref,
             "overview": sinopse_ref,
-            "score": float(ref.rating_avg or 0.0),
-            "classificacao": ref.age_rating,
-            "ano": ref.year,
-            "generos": _parse_genres(ref.genres)
+            "score": float(getattr(ref, "rating_avg", 0.0) or 0.0),
+            "classificacao": getattr(ref, "age_rating", None),
+            "ano": getattr(ref, "year", None),
+            "generos": _parse_genres(getattr(ref, "genres", None))
         })
-
-    TARGET_HERO_COUNT = 7
-    if len(hero) < TARGET_HERO_COUNT:
-        extras_f = db.query(FilmeDB).order_by(desc(FilmeDB.rating_avg)).limit(10).all()
-        extras_s = db.query(SerieDB).order_by(desc(SerieDB.rating_avg)).limit(10).all()
-        extras_mix = sorted(extras_f + extras_s, key=lambda x: (x.rating_avg or 0), reverse=True)
-
-        for ref in extras_mix:
-            if len(hero) >= TARGET_HERO_COUNT:
-                break
-            item_id = str(getattr(ref, "iptv_id", None) or ref.id)
-            if item_id in vistos_ids:
-                continue
-            vistos_ids.add(item_id)
-
-            tipo_ref = "filme" if isinstance(ref, FilmeDB) else "serie"
-            sinopse_ref = getattr(ref, "description", None) or getattr(ref, "sinopse", None) or ""
-
-            hero.append({
-                "id": item_id,
-                "tipo": tipo_ref,
-                "titulo": getattr(ref, "title", "Sem Título"),
-                "banner": getattr(ref, "backdrop", None) or getattr(ref, "poster", None),
-                "capa": getattr(ref, "poster", None),
-                "logo": getattr(ref, "logo", None),
-                "sinopse": sinopse_ref,
-                "overview": sinopse_ref,
-                "score": float(getattr(ref, "rating_avg", 0.0) or 0.0),
-                "classificacao": getattr(ref, "age_rating", None),
-                "ano": getattr(ref, "year", None),
-                "generos": _parse_genres(getattr(ref, "genres", None))
-            })
 
     return hero
 
@@ -130,7 +107,6 @@ def _get_items_by_tmdb_or_rating(db: Session, Tabela, tmdb_ids: list, limit=15):
     itens = []
     vistos_ids = set()
 
-    # Tenta buscar pelo TMDB primeiro se houver IDs válidos
     if tmdb_ids:
         db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(tmdb_ids)).all()
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
@@ -142,7 +118,6 @@ def _get_items_by_tmdb_or_rating(db: Session, Tabela, tmdb_ids: list, limit=15):
             if len(itens) >= limit:
                 break
 
-    # Se faltar itens (ou o TMDB falhar/vier vazio), preenche robustamente com os melhores avaliados do banco local
     if len(itens) < limit:
         extras = db.query(Tabela).order_by(desc(Tabela.rating_avg)).limit(50).all()
         for ext in extras:
