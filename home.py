@@ -4,7 +4,7 @@ import httpx
 import asyncio
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_, and_
 from db import Filme as FilmeDB, Serie as SerieDB, Slide as SlideDB
 from config import TMDB_ENABLED, TMDB_API_KEY, TMDB_LANGUAGE, PUBLIC_BASE_URL
 
@@ -30,10 +30,11 @@ def _parse_genres(genres_raw):
         return []
 
 def _is_conteudo_proibido(item) -> bool:
-    """Bloqueia documentários, músicas/shows e conteúdo nacional/brasileiro."""
+    """Bloqueia documentários, músicas, filmes nacionais e filmes muito antigos/clássicos mal formatados."""
     genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     pais = str(getattr(item, "country", "")).lower()
     coletany = str(getattr(item, "coletany", "")).lower()
+    ano = getattr(item, "year", None)
 
     if "documentário" in genres or "documentary" in genres:
         return True
@@ -41,40 +42,36 @@ def _is_conteudo_proibido(item) -> bool:
         return True
     if "brasil" in pais or "nacional" in coletany or "brasil" in coletany:
         return True
+    # Bloqueia filmes muito antigos que poluem as tendências com capas em preto e branco indesejadas
+    if ano and int(ano) < 1995:
+        return True
 
     return False
 
 def _is_dorama(item) -> bool:
-    """Identifica estritamente doramas e séries asiáticas."""
-    genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
+    """Puxa estritamente da categoria/coletânea ou metadados de dorama."""
     coletany = str(getattr(item, "coletany", "")).lower()
+    genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     titulo = str(getattr(item, "title", "")).lower()
-    
-    # Se for anime ou desenho ocidental, descarta imediatamente de dorama
-    if "animação" in genres or "animation" in genres or "anime" in genres or "desenho" in coletany:
+
+    if "anime" in genres or "animação" in genres or "desenho" in coletany:
         return False
 
-    termos_dorama = ["coreia", "kdrama", "dorama", "doramas", "j-drama", "c-drama", "asiática", "asian", "romance coreano"]
+    termos_dorama = ["dorama", "doramas", "kdrama", "coreia", "coreana", "j-drama", "c-drama", "asiática", "asian"]
     for termo in termos_dorama:
         if termo in coletany or termo in titulo:
-            return True
-            
-    # Doramas costumam ser do gênero drama com origem asiática ou tags específicas
-    if "drama" in genres and ("coreia" in coletany or "china" in coletany or "Japão" in coletany or "legendado" in coletany or "dublado" in coletany):
-        if "eua" not in coletany and "estados unidos" not in coletany:
             return True
 
     return False
 
 def _is_anime(item) -> bool:
-    """Identifica especificamente animes japoneses."""
+    """Puxa estritamente animes."""
     genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     coletany = str(getattr(item, "coletany", "")).lower()
-    titulo = str(getattr(item, "title", "")).lower()
     return "anime" in genres or "anime" in coletany or "animação japonesa" in coletany
 
 def _is_desenho(item) -> bool:
-    """Identifica desenhos e animações ocidentais."""
+    """Desenhos e animações ocidentais."""
     genres = [g.lower() for g in _parse_genres(getattr(item, "genres", None))]
     coletany = str(getattr(item, "coletany", "")).lower()
     if _is_anime(item):
@@ -141,14 +138,33 @@ async def _fetch_tmdb_list(endpoint: str, params: dict) -> list:
         async with httpx.AsyncClient(timeout=4) as client:
             r = await client.get(endpoint, params=params)
             if r.status_code == 200:
-                return [item['id'] for item in r.json().get('results', [])][:30]
+                return [item['id'] for item in r.json().get('results', [])][:35]
     except Exception:
         pass
     return []
 
-def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=10, tipo_filtro="geral"):
+def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_filtro="geral"):
     itens = []
     vistos_ids = set()
+
+    # Se for dorama, busca direto na categoria/coletânea do banco para garantir precisão absoluta
+    if tipo_filtro == "dorama":
+        db_doramas = db.query(Tabela).all()
+        for item in db_doramas:
+            if _is_dorama(item) and item.id not in vistos_ids:
+                vistos_ids.add(item.id)
+                itens.append(item)
+            if len(itens) >= limit:
+                return itens
+
+    if tipo_filtro == "anime":
+        db_animes = db.query(Tabela).all()
+        for item in db_animes:
+            if _is_anime(item) and item.id not in vistos_ids:
+                vistos_ids.add(item.id)
+                itens.append(item)
+            if len(itens) >= limit:
+                return itens
 
     if tmdb_ids:
         db_itens = db.query(Tabela).filter(Tabela.tmdb_id.in_(tmdb_ids)).all()
@@ -160,12 +176,6 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=10, tipo_fil
                     continue
                 if tipo_filtro == "top10" and (_is_dorama(item) or _is_anime(item) or _is_desenho(item)):
                     continue
-                if tipo_filtro == "dorama" and not _is_dorama(item):
-                    continue
-                if tipo_filtro == "anime" and not _is_anime(item):
-                    continue
-                if tipo_filtro == "desenho" and not _is_desenho(item):
-                    continue
                 if tipo_filtro == "geral" and (_is_dorama(item) or _is_anime(item) or _is_desenho(item)):
                     continue
                 
@@ -176,18 +186,12 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=10, tipo_fil
 
     if len(itens) < limit:
         query = db.query(Tabela).order_by(desc(Tabela.rating_avg))
-        extras = query.limit(200).all()
+        extras = query.limit(300).all()
         for ext in extras:
             if ext.id not in vistos_ids:
                 if _is_conteudo_proibido(ext):
                     continue
                 if tipo_filtro == "top10" and (_is_dorama(ext) or _is_anime(ext) or _is_desenho(ext)):
-                    continue
-                if tipo_filtro == "dorama" and not _is_dorama(ext):
-                    continue
-                if tipo_filtro == "anime" and not _is_anime(ext):
-                    continue
-                if tipo_filtro == "desenho" and not _is_desenho(ext):
                     continue
                 if tipo_filtro == "geral" and (_is_dorama(ext) or _is_anime(ext) or _is_desenho(ext)):
                     continue
@@ -233,11 +237,11 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
     em_alta_mix = sorted(em_alta_f + em_alta_s, key=lambda x: (x.rating_avg or 0), reverse=True)[:15]
     add("em_alta", "🔥 O Que Todo Mundo Está Assistindo", em_alta_mix, "misto", "fire")
 
-    # 2. 🏆 Top 10 Filmes (Filtrado sem documentários, músicas ou nacionais)
+    # 2. 🏆 Top 10 Filmes (Limpo de antigos, doramas, animes e documentários)
     top_f = _get_items_filtrados(db, FilmeDB, t_week_f, 10, "top10")
     add("top10_filmes", "🏆 Top 10 Filmes", top_f, "filme", "star")
 
-    # 3. 🏆 Top 10 Séries (Filtrado sem documentários, músicas ou nacionais)
+    # 3. 🏆 Top 10 Séries (Limpo de antigos, doramas, animes e documentários)
     top_s = _get_items_filtrados(db, SerieDB, t_week_s, 10, "top10")
     add("top10_series", "🏆 Top 10 Séries", top_s, "serie", "star")
 
@@ -251,14 +255,14 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
     tend_semana_s = _get_items_filtrados(db, SerieDB, t_week_s, 12, "geral")
     add("tendencias_semana", "📈 Tendências da Semana", sorted(tend_semana_f + tend_semana_s, key=lambda x: (x.rating_avg or 0), reverse=True), "misto", "trending-up")
 
-    # 6. 🌸 Doramas (Estritamente isolados)
-    doramas_f = _get_items_filtrados(db, FilmeDB, t_week_f, 15, "dorama")
-    doramas_s = _get_items_filtrados(db, SerieDB, t_week_s, 15, "dorama")
+    # 6. 🌸 Doramas (Puxando rigorosamente da categoria)
+    doramas_f = _get_items_filtrados(db, FilmeDB, [], 15, "dorama")
+    doramas_s = _get_items_filtrados(db, SerieDB, [], 15, "dorama")
     add("doramas", "🌸 Doramas e Séries Asiáticas", doramas_f + doramas_s, "misto", "heart")
 
-    # 7. ⚡ Animes (Seção dedicada a animes)
-    animes_f = _get_items_filtrados(db, FilmeDB, t_week_f, 15, "anime")
-    animes_s = _get_items_filtrados(db, SerieDB, t_week_s, 15, "anime")
+    # 7. ⚡ Animes (Seção dedicada e isolada só para animes)
+    animes_f = _get_items_filtrados(db, FilmeDB, [], 15, "anime")
+    animes_s = _get_items_filtrados(db, SerieDB, [], 15, "anime")
     add("animes", "⚡ Animes", animes_f + animes_s, "misto", "zap")
 
     # 8. 🎨 Desenhos e Animações Ocidentais
