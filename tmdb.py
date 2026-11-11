@@ -428,7 +428,7 @@ async def buscar_serie_por_tmdb_id(tmdb_id: int):
     backdrop_path = _melhor_backdrop(images.get("backdrops") or [], TMDB_LANGUAGE[:2])
     logo_path = _melhor_logo(images.get("logos") or [], TMDB_LANGUAGE[:2])
     trailer = _melhor_trailer(videos)
-    cert = _classificacao_br_tv(full.get("content_ratings") or {}) if "_classificacao_br_tv" in dir() else _classificacao_tv(full.get("content_ratings") or {})
+    cert = _classificacao_tv(full.get("content_ratings") or {})
 
     # ===== ELENCO E CRIADORES COM FOTOS =====
     elenco = _extrair_elenco_serie(credits, limite=20)
@@ -525,3 +525,39 @@ async def buscar_serie(titulo: str, ano=None):
         tmdb_id = melhor["id"]
 
     return await buscar_serie_por_tmdb_id(tmdb_id)
+
+
+# ==========================================================
+# CALENDÁRIO DE LANÇAMENTO (NOVO)
+# ==========================================================
+async def obter_calendario_lancamento(tmdb_id: int, temporada_num: int):
+    """Busca a data de lançamento de cada episódio da temporada no TMDB."""
+    if not TMDB_ENABLED or not tmdb_id or not temporada_num:
+        return None
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            r = await client.get(
+                f"{TMDB_BASE}/tv/{tmdb_id}/season/{temporada_num}",
+                params={"api_key": TMDB_API_KEY, "language": TMDB_LANGUAGE},
+                headers={"User-Agent": USER_AGENT},
+            )
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            episodios = data.get("episodes", [])
+            
+            # Agrupa os episódios por data de lançamento
+            calendario = {}
+            for ep in episodios:
+                data_lanc = ep.get("air_date")
+                num_ep = ep.get("episode_number")
+                if data_lanc and num_ep:
+                    if data_lanc not in calendario:
+                        calendario[data_lanc] = []
+                    calendario[data_lanc].append(num_ep)
+            
+            return calendario
+        except Exception as e:
+            print(f"[TMDB] Erro ao buscar calendário da série {tmdb_id}: {e}")
+            return None

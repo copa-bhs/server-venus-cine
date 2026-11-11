@@ -1,6 +1,7 @@
 import re
 import traceback
 import httpx
+from datetime import datetime
 
 from config import (
     USER_AGENT, IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, TMDB_ENABLED, PUBLIC_BASE_URL,
@@ -16,7 +17,6 @@ PASSWORD = IPTV_PASSWORD
 INFO_MOVIE_URL  = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_vod_info&vod_id={{id}}"
 INFO_SERIES_URL = f"{BASE_API}?username={USERNAME}&password={PASSWORD}&action=get_series_info&series_id={{id}}"
 
-# ⚡ URLS COM PREFIXO
 def _url_proxy(item_id: str) -> str:
     base = (PUBLIC_BASE_URL or "").rstrip("/")
     if base: return f"{base}/stream/id/movie_{item_id}.mp4"
@@ -119,7 +119,6 @@ async def _buscar_tmdb_serie(info: dict, titulo: str):
 
 async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
     url = INFO_MOVIE_URL.format(id=item_id)
-    # ⚡ TIMEOUT REDUZIDO PARA 10 SEGUNDOS
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         try:
             r = await client.get(url, headers={"User-Agent": USER_AGENT})
@@ -200,8 +199,7 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
 
 async def fetch_series_info(item_id: str, force: bool = False) -> dict:
     url = INFO_SERIES_URL.format(id=item_id)
-    # ⚡ TIMEOUT REDUZIDO PARA 10 SEGUNDOS
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         try:
             r = await client.get(url, headers={"User-Agent": USER_AGENT})
             if r.status_code != 200: raise ValueError(f"Provedor recusou (HTTP {r.status_code})")
@@ -225,6 +223,8 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
     diretor_xtream = _safe(info, "director")
 
     eps_normalizados = []
+    temporadas_unicas = set()
+    
     if isinstance(episodes_map, dict):
         for season_key, eps_list in episodes_map.items():
             season_num = _to_int(season_key)
@@ -234,27 +234,38 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
                 ep_info = ep.get("info") or {}
                 ep_id = _safe(ep, "id")
                 ep_num = _to_int(_safe(ep, "episode_num"))
+                
+                # ⚡ CORREÇÃO DE BUG: Força a montagem correta da URL do episódio
+                if ep_id:
+                    ext = _safe(ep, "container_extension", default="mp4")
+                    url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{ep_id}.{ext}"
+                else:
+                    url_xtream = _safe(ep, "stream_url")
+
                 titulo_bruto = _safe(ep_info, "name") or _safe(ep, "title") or ""
                 titulo_limpo = _clean_episode_title(titulo_bruto, titulo_serie)
                 if not titulo_limpo: titulo_limpo = f"Episódio {ep_num}" if ep_num else "Episódio"
-
-                url_xtream = _safe(ep, "stream_url")
-                if not url_xtream and ep_id:
-                    ext = _safe(ep, "container_extension", default="mp4")
-                    url_xtream = f"{IPTV_HOST}/series/{USERNAME}/{PASSWORD}/{ep_id}.{ext}"
 
                 if ep_id:
                     proxy.register_item(str(ep_id), url_xtream, titulo_limpo, "serie")
 
                 eps_normalizados.append({
-                    "id": str(ep_id) if ep_id else None, "temporada": season_num, "episodio": ep_num,
-                    "titulo": titulo_limpo, "sinopse": _safe(ep_info, "plot"), "capa": _safe(ep_info, "movie_image"),
-                    "duracao": _safe(ep_info, "duration"), "score": _safe(ep_info, "rating"),
-                    "url_stream": _url_proxy_episodio(str(ep_id)) if ep_id else None, "url_stream_direto": url_xtream,
+                    "id": str(ep_id) if ep_id else None, 
+                    "temporada": season_num, 
+                    "episodio": ep_num,
+                    "titulo": titulo_limpo, 
+                    "sinopse": _safe(ep_info, "plot"), 
+                    "capa": _safe(ep_info, "movie_image"),
+                    "duracao": _safe(ep_info, "duration"), 
+                    "score": _safe(ep_info, "rating"),
+                    "url_stream": _url_proxy_episodio(str(ep_id)) if ep_id else None, 
+                    "url_stream_direto": url_xtream,
                 })
+                if season_num: temporadas_unicas.add(season_num)
 
+    # Ordenação estrita para evitar que episódios fiquem trocados
     eps_normalizados.sort(key=lambda e: (e["temporada"] or 0, e["episodio"] or 0))
-    temporadas_unicas = sorted({e["temporada"] for e in eps_normalizados if e["temporada"]})
+    temporadas_unicas = sorted(list(temporadas_unicas))
 
     payload = {
         "id": item_id, "tipo": "serie", "titulo": titulo_serie, "titulo_original": _safe(info, "original_name"),
@@ -277,6 +288,7 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
         "episodios": eps_normalizados, "tmdb_id": _to_int(_safe(info, "tmdb_id")),
         "tmdb_recente": False, "campos_preenchidos_por_tmdb": [], "elenco": [], "diretores": [], "criadores": [],
         "elenco_texto": elenco_xtream, "diretor_texto": diretor_xtream,
+        "calendario_lancamento": None
     }
 
     if not TMDB_ENABLED: return payload
@@ -309,6 +321,17 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
             if logo_fanart: payload["logo"] = logo_fanart; payload["logo_fonte"] = "fanart"; preenchidos.append("logo")
 
         payload["campos_preenchidos_por_tmdb"] = preenchidos
+
+        # ⚡ NOVO: BUSCAR CALENDÁRIO DE LANÇAMENTOS (TMDB)
+        if temporadas_unicas:
+            ultima_temporada = temporadas_unicas[-1]
+            calendario_bruto = await tmdb.obter_calendario_lancamento(dados_tmdb["tmdb_id"], ultima_temporada)
+            if calendario_bruto:
+                # Formata para o app (ex: [{"data": "2024-11-11", "episodios": [5, 6]}])
+                cal_formatado = [{"data": k, "episodios": v} for k, v in calendario_bruto.items()]
+                cal_formatado.sort(key=lambda x: x["data"])
+                payload["calendario_lancamento"] = cal_formatado
+
     except Exception as e:
         print(f"[!] TMDB falhou série {item_id}: {e}")
         traceback.print_exc()

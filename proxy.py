@@ -4,15 +4,11 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from config import (
     USER_AGENT, SLUG_MAP_FILMES_FILE, SLUG_MAP_SERIES_FILE, SLUG_MAP_CANAIS_FILE,
-    PROXY_ENABLED, PROXY_MAX_CONCURRENT, PROXY_MAX_PER_IP,
-    PROXY_CHUNK_SIZE, PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT,
+    PROXY_ENABLED, PROXY_CHUNK_SIZE, PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT,
 )
 
-_active_total: int = 0
-_active_by_ip: dict = {}
-
 def stats() -> dict:
-    return {"ativo_total": _active_total, "limite_total": PROXY_MAX_CONCURRENT, "limite_por_ip": PROXY_MAX_PER_IP, "ips_conectados": len(_active_by_ip), "por_ip": dict(_active_by_ip)}
+    return {"ativo": True, "limites": "desativados"}
 
 def slugify(texto: str, ano=None) -> str:
     if not texto: return ""
@@ -98,25 +94,21 @@ def register_item(item_id: str, url: str, titulo: str, tipo: str, slug: str = No
     if slug: _SLUG_MAP[slug] = dados
 
 async def stream_proxy(url: str, request: Request) -> Response:
-    global _active_total
     if not PROXY_ENABLED: raise HTTPException(404, "Proxy desativado.")
     if not url or not url.strip(): raise HTTPException(404, "Item sem URL.")
 
     if request.method == "OPTIONS":
         return Response(status_code=200, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS", "Access-Control-Allow-Headers": "*", "Access-Control-Max-Age": "3600"})
 
-    client_ip = request.client.host if request.client else "unknown"
-    if _active_total >= PROXY_MAX_CONCURRENT: raise HTTPException(503, "Servidor no limite.")
-    if _active_by_ip.get(client_ip, 0) >= PROXY_MAX_PER_IP: raise HTTPException(429, "Limite por IP.")
-
     headers = {"User-Agent": USER_AGENT}
     if "range" in request.headers: headers["Range"] = request.headers["range"]
     if "if-modified-since" in request.headers: headers["If-Modified-Since"] = request.headers["if-modified-since"]
     if "if-range" in request.headers: headers["If-Range"] = request.headers["if-range"]
 
+    # Cliente otimizado para máxima velocidade
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=PROXY_CONNECT_TIMEOUT, read=PROXY_READ_TIMEOUT, write=PROXY_READ_TIMEOUT, pool=None),
-        limits=httpx.Limits(max_connections=PROXY_MAX_CONCURRENT + 50, max_keepalive_connections=PROXY_MAX_CONCURRENT),
+        limits=httpx.Limits(max_connections=1000, max_keepalive_connections=200),
         follow_redirects=True
     )
 
@@ -133,9 +125,6 @@ async def stream_proxy(url: str, request: Request) -> Response:
         await client.aclose()
         raise HTTPException(status, "Provedor recusou.")
 
-    _active_total += 1
-    _active_by_ip[client_ip] = _active_by_ip.get(client_ip, 0) + 1
-
     resp_headers = {}
     for h in ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"):
         if h in upstream.headers: resp_headers[h] = upstream.headers[h]
@@ -151,16 +140,11 @@ async def stream_proxy(url: str, request: Request) -> Response:
     media_type = upstream.headers.get("content-type", "video/mp4")
 
     async def _streamer():
-        global _active_total
         try:
             async for chunk in upstream.aiter_bytes(PROXY_CHUNK_SIZE):
                 yield chunk
         except Exception: pass
         finally:
-            _active_total = max(0, _active_total - 1)
-            if client_ip in _active_by_ip:
-                _active_by_ip[client_ip] -= 1
-                if _active_by_ip[client_ip] <= 0: del _active_by_ip[client_ip]
             try: await upstream.aclose()
             except: pass
             try: await client.aclose()

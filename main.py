@@ -71,7 +71,8 @@ def _serializar_detalhes(item):
 async def _get_serie_completa(s: SerieDB):
     base_data = _serializar_detalhes(s)
     try:
-        info_iptv = await asyncio.wait_for(fetch_series_info(str(s.iptv_id)), timeout=8.0)
+        # ⚡ OTIMIZAÇÃO: Timeout reduzido para 5s. Se o IPTV enrolar, cai no fallback rápido
+        info_iptv = await asyncio.wait_for(fetch_series_info(str(s.iptv_id)), timeout=5.0)
         if info_iptv:
             info_iptv["title"] = base_data["title"]; info_iptv["description"] = base_data["description"]
             info_iptv["poster"] = base_data["poster"]; info_iptv["backdrop"] = base_data["backdrop"]
@@ -79,6 +80,11 @@ async def _get_serie_completa(s: SerieDB):
             info_iptv["age_rating"] = base_data["age_rating"]; info_iptv["genres"] = base_data["genres"]
             info_iptv["type"] = "series"; info_iptv["created_at"] = base_data["created_at"]
             if "episodios" in info_iptv: info_iptv["episodes"] = info_iptv["episodios"]
+            
+            # ⚡ CORREÇÃO: Repassa o calendário de lançamento para o Frontend
+            if "calendario_lancamento" in info_iptv:
+                base_data["calendario_lancamento"] = info_iptv["calendario_lancamento"]
+                
             return info_iptv
     except asyncio.TimeoutError:
         print(f"[API] Timeout ao buscar episódios do IPTV para {s.title}. Retornando dados do banco.")
