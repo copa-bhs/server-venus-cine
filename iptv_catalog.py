@@ -128,11 +128,51 @@ async def processar_item(client, item, semaforo):
         return {"status": "fail", "data": {"iptv_id": item["id"], "nome_original": item.get("nome_bruto") or item["titulo"], "tipo": item["tipo"]}}
 
 async def rodar_importacao():
-    import parser as iptv_parser
+    from config import FILMES_FILE, SERIES_FILE
     
-    logs.adicionar_log("📥 Baixando listas do IPTV...")
-    filmes, series = await asyncio.gather(iptv_parser.fetch_filmes(), iptv_parser.fetch_series())
-    itens = filmes + series
+    logs.adicionar_log("📥 Lendo listas do cache local...")
+    
+    filmes = []
+    series = []
+    
+    if FILMES_FILE.exists():
+        try:
+            filmes = json.loads(FILMES_FILE.read_text(encoding="utf-8"))
+            logs.adicionar_log(f"📽️ {len(filmes)} filmes carregados do cache")
+        except Exception as e:
+            logs.adicionar_log(f"⚠️ Erro ao ler filmes.json: {e}")
+    
+    if SERIES_FILE.exists():
+        try:
+            series = json.loads(SERIES_FILE.read_text(encoding="utf-8"))
+            logs.adicionar_log(f"📺 {len(series)} séries carregadas do cache")
+        except Exception as e:
+            logs.adicionar_log(f"⚠️ Erro ao ler series.json: {e}")
+    
+    # Converte para o formato esperado pelo processar_item
+    itens = []
+    for f in filmes:
+        itens.append({
+            "id": str(f.get("stream_id", f.get("id", ""))),
+            "titulo": f.get("name", "Sem Título"),
+            "tipo": "movie",
+            "categoria": f.get("category_name", "Desconhecida"),
+            "url": f.get("stream_url", ""),
+            "added": f.get("added", 0),
+            "nome_bruto": f.get("name", "")
+        })
+    
+    for s in series:
+        itens.append({
+            "id": str(s.get("series_id", s.get("id", ""))),
+            "titulo": s.get("name", "Sem Título"),
+            "tipo": "series",
+            "categoria": s.get("category_name", "Desconhecida"),
+            "url": s.get("stream_url", ""),
+            "added": s.get("added", 0),
+            "nome_bruto": s.get("name", "")
+        })
+    
     total = len(itens)
     random.shuffle(itens) 
     
