@@ -7,7 +7,6 @@ from config import (
     USER_AGENT, IPTV_HOST, IPTV_USERNAME, IPTV_PASSWORD, TMDB_ENABLED, PUBLIC_BASE_URL,
 )
 import tmdb
-import logos
 import proxy
 
 BASE_API = f"{IPTV_HOST}/player_api.php"
@@ -186,9 +185,6 @@ async def fetch_movie_info(item_id: str, force: bool = False) -> dict:
 
         if dados_tmdb.get("logo"):
             payload["logo"] = dados_tmdb["logo"]; payload["logo_original"] = dados_tmdb.get("logo_original"); payload["logo_fonte"] = "tmdb"; preenchidos.append("logo")
-        elif dados_tmdb.get("tmdb_id"):
-            logo_fanart = await logos.buscar_logo_fanart_movie(dados_tmdb["tmdb_id"])
-            if logo_fanart: payload["logo"] = logo_fanart; payload["logo_fonte"] = "fanart"; preenchidos.append("logo")
 
         payload["campos_preenchidos_por_tmdb"] = preenchidos
     except Exception as e:
@@ -316,9 +312,6 @@ async def fetch_series_info(item_id: str, force: bool = False) -> dict:
 
         if dados_tmdb.get("logo"):
             payload["logo"] = dados_tmdb["logo"]; payload["logo_original"] = dados_tmdb.get("logo_original"); payload["logo_fonte"] = "tmdb"; preenchidos.append("logo")
-        elif dados_tmdb.get("tvdb_id"):
-            logo_fanart = await logos.buscar_logo_fanart_tv(dados_tmdb["tvdb_id"])
-            if logo_fanart: payload["logo"] = logo_fanart; payload["logo_fonte"] = "fanart"; preenchidos.append("logo")
 
         payload["campos_preenchidos_por_tmdb"] = preenchidos
 
