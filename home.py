@@ -148,8 +148,9 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
+            stream_type = str(getattr(item, "stream_type", "movie"))
             iptv_id = str(getattr(item, "iptv_id", None) or "")
-            chave = iptv_id if iptv_id else f"id_{item.id}"
+            chave = f"{stream_type}_{iptv_id}" if iptv_id else f"{stream_type}_id_{item.id}"
             if _is_dorama_categoria(coletany) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
                     vistos_ids.add(chave)
@@ -161,8 +162,9 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
+            stream_type = str(getattr(item, "stream_type", "movie"))
             iptv_id = str(getattr(item, "iptv_id", None) or "")
-            chave = iptv_id if iptv_id else f"id_{item.id}"
+            chave = f"{stream_type}_{iptv_id}" if iptv_id else f"{stream_type}_id_{item.id}"
             if (_is_anime_categoria(coletany) or _is_anime(item)) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
                     vistos_ids.add(chave)
@@ -174,8 +176,9 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
+            stream_type = str(getattr(item, "stream_type", "movie"))
             iptv_id = str(getattr(item, "iptv_id", None) or "")
-            chave = iptv_id if iptv_id else f"id_{item.id}"
+            chave = f"{stream_type}_{iptv_id}" if iptv_id else f"{stream_type}_id_{item.id}"
             if _is_desenho_categoria(coletany) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
                     vistos_ids.add(chave)
@@ -189,8 +192,9 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         for t_id in tmdb_ids:
             item = map_db.get(str(t_id))
             if item:
+                stream_type = str(getattr(item, "stream_type", "movie"))
                 iptv_id = str(getattr(item, "iptv_id", None) or "")
-                chave = iptv_id if iptv_id else f"id_{item.id}"
+                chave = f"{stream_type}_{iptv_id}" if iptv_id else f"{stream_type}_id_{item.id}"
                 if chave not in vistos_ids:
                     if _is_conteudo_proibido(item): continue
                     coletany = str(getattr(item, "coletany", "")).strip()
@@ -203,8 +207,9 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         query = db.query(Tabela).order_by(desc(Tabela.rating_avg))
         extras = query.limit(400).all()
         for ext in extras:
+            stream_type = str(getattr(ext, "stream_type", "movie"))
             iptv_id = str(getattr(ext, "iptv_id", None) or "")
-            chave = iptv_id if iptv_id else f"id_{ext.id}"
+            chave = f"{stream_type}_{iptv_id}" if iptv_id else f"{stream_type}_id_{ext.id}"
             if chave not in vistos_ids:
                 if _is_conteudo_proibido(ext): continue
                 coletany = str(getattr(ext, "coletany", "")).strip()
@@ -227,12 +232,13 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
         items_unicos = []
         for it in items:
             # ⚡ CORREÇÃO: Evita colisão de ID interno entre filmes e séries na mesma prateleira
-            # Usa o iptv_id se existir, senão usa o ID interno com o tipo como prefixo
+            # Usa o iptv_id + stream_type como chave única
+            stream_type = str(getattr(it, "stream_type", "movie"))
             iptv_id = str(getattr(it, "iptv_id", None) or "")
             if iptv_id:
-                chave = f"{getattr(it, 'stream_type', 'movie')}_{iptv_id}"
+                chave = f"{stream_type}_{iptv_id}"
             else:
-                chave = f"{getattr(it, 'stream_type', 'movie')}_{it.id}"
+                chave = f"{stream_type}_id_{it.id}"
             if chave not in vistos:
                 vistos.add(chave)
                 items_unicos.append(it)

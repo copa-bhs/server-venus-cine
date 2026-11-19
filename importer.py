@@ -32,8 +32,8 @@ def importar_catalogo():
             tipo = item.get("stream_type", "movie")
             Tabela = FilmeDB if tipo == "movie" else (SerieDB if tipo in ("tv", "series") else CanalDB)
 
-            # 1. Tenta achar pelo ID do IPTV
-            obj = db.query(Tabela).filter(Tabela.iptv_id == iptv_id).first()
+            # 1. Tenta achar pelo ID do IPTV + stream_type (evita duplicação entre filmes/séries)
+            obj = db.query(Tabela).filter(Tabela.iptv_id == iptv_id, Tabela.stream_type == tipo).first()
             
             # ⚡ TRAVA ANTI-DUPLICAÇÃO (Evita o problema das categorias Netflix / Doramas)
             if not obj:
@@ -42,12 +42,12 @@ def importar_catalogo():
                 year = item.get("year")
                 
                 if tmdb_id:
-                    obj_duplicado = db.query(Tabela).filter(Tabela.tmdb_id == tmdb_id).first()
+                    obj_duplicado = db.query(Tabela).filter(Tabela.tmdb_id == tmdb_id, Tabela.stream_type == tipo).first()
                     if obj_duplicado:
                         ignorados_duplicados += 1
                         continue # Pula e não salva duplicado
                 elif title:
-                    obj_duplicado = db.query(Tabela).filter(Tabela.title == title, Tabela.year == year).first()
+                    obj_duplicado = db.query(Tabela).filter(Tabela.title == title, Tabela.year == year, Tabela.stream_type == tipo).first()
                     if obj_duplicado:
                         ignorados_duplicados += 1
                         continue
