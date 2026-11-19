@@ -21,8 +21,8 @@ def importar_catalogo():
         return False
 
     db = SessionLocal()
-    adicionados, atualizados = 0, 0
-    logs.adicionar_log(f"Processando {len(catalogo)} itens do catálogo no banco de dados...")
+    adicionados, atualizados, ignorados_duplicados = 0, 0, 0
+    logs.adicionar_log(f"Processando {len(catalogo)} itens no banco...")
 
     try:
         for item in catalogo:
@@ -32,12 +32,31 @@ def importar_catalogo():
             tipo = item.get("stream_type", "movie")
             Tabela = FilmeDB if tipo == "movie" else (SerieDB if tipo in ("tv", "series") else CanalDB)
 
+            # 1. Tenta achar pelo ID do IPTV
             obj = db.query(Tabela).filter(Tabela.iptv_id == iptv_id).first()
-            is_novo = False
+            
+            # ⚡ TRAVA ANTI-DUPLICAÇÃO (Evita o problema das categorias Netflix / Doramas)
+            if not obj:
+                tmdb_id = item.get("tmdb_id")
+                title = item.get("title")
+                year = item.get("year")
+                
+                if tmdb_id:
+                    obj_duplicado = db.query(Tabela).filter(Tabela.tmdb_id == tmdb_id).first()
+                    if obj_duplicado:
+                        ignorados_duplicados += 1
+                        continue # Pula e não salva duplicado
+                elif title:
+                    obj_duplicado = db.query(Tabela).filter(Tabela.title == title, Tabela.year == year).first()
+                    if obj_duplicado:
+                        ignorados_duplicados += 1
+                        continue
 
+            is_novo = False
             if not obj:
                 obj = Tabela(iptv_id=iptv_id)
-                db.add(obj); is_novo = True
+                db.add(obj)
+                is_novo = True
 
             if not is_novo and getattr(obj, "editado", False): continue
 
@@ -63,12 +82,9 @@ def importar_catalogo():
             obj.age_rating = item.get("age_rating")
             obj.url = item.get("url", "")
 
-            # ⚡ SALVANDO A DATA REAL
             created_at_str = item.get("created_at")
             if created_at_str:
-                try:
-                    dt = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    obj.created_at = dt
+                try: obj.created_at = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S.%fZ")
                 except: pass 
 
             generos = item.get("genres", [])
@@ -77,28 +93,11 @@ def importar_catalogo():
             if is_novo: adicionados += 1
             else: atualizados += 1
 
-            if (adicionados + atualizados) % 1000 == 0:
-                db.commit()
+            if (adicionados + atualizados) % 1000 == 0: db.commit()
 
         db.commit()
-        logs.adicionar_log(f"✅ Catálogo importado no banco: {adicionados} novos, {atualizados} atualizados.")
+        logs.adicionar_log(f"✅ Importação: {adicionados} novos, {atualizados} atualizados, {ignorados_duplicados} duplicados ignorados.")
     except Exception as e:
-        db.rollback(); logs.adicionar_log(f"❌ Erro durante a importação: {e}"); return False
+        db.rollback(); logs.adicionar_log(f"❌ Erro na importação: {e}"); return False
     finally: db.close()
-
-    if FALHAS_FILE.exists():
-        try:
-            falhas = json.loads(FALHAS_FILE.read_text(encoding="utf-8"))
-            db = SessionLocal()
-            logs.adicionar_log(f"Registrando {len(falhas)} falhas de TMDB...")
-            db.query(FalhaDB).delete()
-            for f in falhas:
-                iptv_id = str(f.get("iptv_id", ""))
-                if not iptv_id: continue
-                db.add(FalhaDB(iptv_id=iptv_id, nome_original=f.get("nome_original", "Desconhecido"), tipo=f.get("tipo", "movie"), motivo="Não encontrado no TMDB"))
-            db.commit()
-            logs.adicionar_log("✅ Falhas registradas.")
-        except Exception as e: logs.adicionar_log(f"❌ Erro ao processar falhas: {e}")
-        finally: db.close()
-
     return True

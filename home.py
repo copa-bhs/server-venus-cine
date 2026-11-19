@@ -78,6 +78,10 @@ def _serializar_leve(item, badge_especial=None):
     # ⚡ CORREÇÃO CRÍTICA: Pega o ID do IPTV real. Se não tiver, retorna None (não usa o ID interno do banco).
     iptv_id_real = str(item.iptv_id) if getattr(item, "iptv_id", None) else None
 
+    # ⚡ CORREÇÃO DUPLICAÇÃO: Se não tem iptv_id, usa o ID interno do banco como fallback
+    if not iptv_id_real:
+        iptv_id_real = str(item.id) if getattr(item, "id", None) else None
+
     return {
         "iptv_id": iptv_id_real,
         "title": getattr(item, "title", "") or "Sem título",
@@ -138,14 +142,17 @@ async def _fetch_tmdb_list(endpoint: str, params: dict) -> list:
 def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_filtro="geral"):
     itens = []
     vistos_ids = set()
+    vistos_iptv_ids = set()
 
     if tipo_filtro == "dorama":
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
-            if _is_dorama_categoria(coletany) and item.id not in vistos_ids:
+            iptv_id = str(getattr(item, "iptv_id", None) or "")
+            chave = iptv_id if iptv_id else f"id_{item.id}"
+            if _is_dorama_categoria(coletany) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
-                    vistos_ids.add(item.id)
+                    vistos_ids.add(chave)
                     itens.append(item)
             if len(itens) >= limit: return itens
         return itens
@@ -154,9 +161,11 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
-            if (_is_anime_categoria(coletany) or _is_anime(item)) and item.id not in vistos_ids:
+            iptv_id = str(getattr(item, "iptv_id", None) or "")
+            chave = iptv_id if iptv_id else f"id_{item.id}"
+            if (_is_anime_categoria(coletany) or _is_anime(item)) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
-                    vistos_ids.add(item.id)
+                    vistos_ids.add(chave)
                     itens.append(item)
             if len(itens) >= limit: return itens
         return itens
@@ -165,9 +174,11 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         db_itens = db.query(Tabela).all()
         for item in db_itens:
             coletany = str(getattr(item, "coletany", "")).strip()
-            if _is_desenho_categoria(coletany) and item.id not in vistos_ids:
+            iptv_id = str(getattr(item, "iptv_id", None) or "")
+            chave = iptv_id if iptv_id else f"id_{item.id}"
+            if _is_desenho_categoria(coletany) and chave not in vistos_ids:
                 if not _is_conteudo_proibido(item):
-                    vistos_ids.add(item.id)
+                    vistos_ids.add(chave)
                     itens.append(item)
             if len(itens) >= limit: return itens
         return itens
@@ -177,23 +188,28 @@ def _get_items_filtrados(db: Session, Tabela, tmdb_ids: list, limit=12, tipo_fil
         map_db = {str(it.tmdb_id): it for it in db_itens if it.tmdb_id is not None}
         for t_id in tmdb_ids:
             item = map_db.get(str(t_id))
-            if item and item.id not in vistos_ids:
-                if _is_conteudo_proibido(item): continue
-                coletany = str(getattr(item, "coletany", "")).strip()
-                if _is_anime(item) or _is_anime_categoria(coletany) or _is_dorama_categoria(coletany) or _is_desenho_categoria(coletany): continue
-                vistos_ids.add(item.id)
-                itens.append(item)
+            if item:
+                iptv_id = str(getattr(item, "iptv_id", None) or "")
+                chave = iptv_id if iptv_id else f"id_{item.id}"
+                if chave not in vistos_ids:
+                    if _is_conteudo_proibido(item): continue
+                    coletany = str(getattr(item, "coletany", "")).strip()
+                    if _is_anime(item) or _is_anime_categoria(coletany) or _is_dorama_categoria(coletany) or _is_desenho_categoria(coletany): continue
+                    vistos_ids.add(chave)
+                    itens.append(item)
             if len(itens) >= limit: break
 
     if len(itens) < limit:
         query = db.query(Tabela).order_by(desc(Tabela.rating_avg))
         extras = query.limit(400).all()
         for ext in extras:
-            if ext.id not in vistos_ids:
+            iptv_id = str(getattr(ext, "iptv_id", None) or "")
+            chave = iptv_id if iptv_id else f"id_{ext.id}"
+            if chave not in vistos_ids:
                 if _is_conteudo_proibido(ext): continue
                 coletany = str(getattr(ext, "coletany", "")).strip()
                 if _is_anime(ext) or _is_anime_categoria(coletany) or _is_dorama_categoria(coletany) or _is_desenho_categoria(coletany): continue
-                vistos_ids.add(ext.id)
+                vistos_ids.add(chave)
                 itens.append(ext)
                 if len(itens) >= limit: break
 
@@ -211,7 +227,12 @@ def _construir_colecoes(db: Session, t_day_f: list, t_day_s: list, t_week_f: lis
         items_unicos = []
         for it in items:
             # ⚡ CORREÇÃO: Evita colisão de ID interno entre filmes e séries na mesma prateleira
-            chave = f"{getattr(it, 'stream_type', 'movie')}_{it.id}"
+            # Usa o iptv_id se existir, senão usa o ID interno com o tipo como prefixo
+            iptv_id = str(getattr(it, "iptv_id", None) or "")
+            if iptv_id:
+                chave = f"{getattr(it, 'stream_type', 'movie')}_{iptv_id}"
+            else:
+                chave = f"{getattr(it, 'stream_type', 'movie')}_{it.id}"
             if chave not in vistos:
                 vistos.add(chave)
                 items_unicos.append(it)
